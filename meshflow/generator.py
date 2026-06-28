@@ -1,0 +1,889 @@
+"""
+Xacro and .gazebo file generation.
+
+Flat xacro helpers (_urdf_to_xacro_flat_content, _urdf_to_xacro_content) are
+copied verbatim from convert.py — do not modify.
+
+generate_gazebo_file() is the new generalised version that takes URDFTraits.
+"""
+
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+from .detector import SENSOR_PLUGINS, URDFTraits
+
+
+def _banner(text: str) -> None:
+    width = 60
+    print("\n" + "=" * width)
+    print(f"  {text}")
+    print("=" * width)
+
+
+# ---------------------------------------------------------------------------
+# Verbatim helpers from convert.py
+# ---------------------------------------------------------------------------
+
+def _xattr(el: ET.Element, tag: str, attr: str, default: str = "") -> str:
+    child = el.find(tag)
+    return child.get(attr, default) if child is not None else default
+
+def _get_link(root: ET.Element, name: str) -> ET.Element:
+    for link in root.findall("link"):
+        if link.get("name") == name:
+            return link
+    raise KeyError(f"Link not found: {name}")
+
+def _get_joint(root: ET.Element, name: str) -> ET.Element:
+    for joint in root.findall("joint"):
+        if joint.get("name") == name:
+            return joint
+    raise KeyError(f"Joint not found: {name}")
+
+def _inertia_attrs(inertial: ET.Element) -> dict:
+    el = inertial.find("inertia")
+    if el is None:
+        return {k: "0" for k in ("ixx","ixy","ixz","iyy","iyz","izz")}
+    return {k: el.get(k, "0") for k in ("ixx","ixy","ixz","iyy","iyz","izz")}
+
+
+def _urdf_to_xacro_content(urdf_path: Path) -> str:
+    """
+    Convert a flat onshape-to-robot URDF into clean xacro.
+    - Repeated values extracted as xacro:property
+    - Symmetric wheel pairs collapsed into xacro:macro
+    - ${pi} used from xacro built-in (no redefinition)
+    DDR-specific power-user option — hardcodes link/joint names.
+    """
+    tree = ET.parse(urdf_path)
+    root = tree.getroot()
+    robot_name = root.get("name", "robot")
+    pkg = f"{robot_name}_description"
+
+    def mass(link_name: str) -> str:
+        return _get_link(root, link_name).find("inertial/mass").get("value")
+
+    def inertia(link_name: str) -> dict:
+        return _inertia_attrs(_get_link(root, link_name).find("inertial"))
+
+    def vis_origin(link_name: str) -> tuple[str, str]:
+        o = _get_link(root, link_name).find("visual/origin")
+        return o.get("xyz", "0 0 0"), o.get("rpy", "0 0 0")
+
+    def color(link_name: str) -> str:
+        return _get_link(root, link_name).find("visual/material/color").get("rgba")
+
+    wi  = inertia("left_wheel")
+    wli = inertia("left_wheel_link")
+
+    lw_joint  = _get_joint(root, "left_wheel_joint")
+    rw_joint  = _get_joint(root, "right_wheel_joint")
+    lw_o      = lw_joint.find("origin")
+    rw_o      = rw_joint.find("origin")
+    lw_xyz    = lw_o.get("xyz").split()
+
+    wheel_joint_x = lw_xyz[0]
+    wheel_joint_z = lw_xyz[2]
+    left_wheel_y  = lw_xyz[1]
+    right_wheel_y = rw_o.get("xyz").split()[1]
+
+    lw_vis_xyz,  lw_vis_rpy  = vis_origin("left_wheel")
+    rw_vis_xyz,  rw_vis_rpy  = vis_origin("right_wheel")
+    lwl_vis_xyz, lwl_vis_rpy = vis_origin("left_wheel_link")
+    rwl_vis_xyz, rwl_vis_rpy = vis_origin("right_wheel_link")
+
+    lj = _get_joint(root, "left_joint")
+    rj = _get_joint(root, "right_joint")
+
+    bl = _get_link(root, "base_link")
+    bl_in   = bl.find("inertial")
+    bl_in_o = bl_in.find("origin")
+    bl_in_i = _inertia_attrs(bl_in)
+    bl_vis_o = bl.find("visual/origin")
+
+    ld     = _get_link(root, "lidar")
+    ld_in_o = ld.find("inertial/origin")
+    ld_in_i = _inertia_attrs(ld.find("inertial"))
+    ld_vis_o = ld.find("visual/origin")
+    ld_jnt   = _get_joint(root, "lidar_joint")
+
+    ca     = _get_link(root, "caster")
+    ca_in_o = ca.find("inertial/origin")
+    ca_in_i = _inertia_attrs(ca.find("inertial"))
+    ca_vis_o = ca.find("visual/origin")
+    ca_jnt   = _get_joint(root, "caster_joint")
+
+    L = []
+    w = L.append
+
+    w('<?xml version="1.0"?>')
+    w(f'<!-- Generated from {urdf_path.name} by meshflow -->')
+    w(f'<robot name="{robot_name}" xmlns:xacro="http://www.ros.org/wiki/xacro">')
+    w('')
+    w('  <!-- ════════════════════════ Properties ════════════════════════════ -->')
+    w('')
+    w('  <!-- Masses -->')
+    w(f'  <xacro:property name="base_mass"       value="{mass("base_link")}"/>')
+    w(f'  <xacro:property name="wheel_mass"      value="{mass("left_wheel")}"/>')
+    w(f'  <xacro:property name="wheel_link_mass" value="{mass("left_wheel_link")}"/>')
+    w(f'  <xacro:property name="lidar_mass"      value="{mass("lidar")}"/>')
+    w(f'  <xacro:property name="caster_mass"     value="{mass("caster")}"/>')
+    w('')
+    w('  <!-- Drive wheel inertia (left = right — same physical part) -->')
+    w(f'  <xacro:property name="wheel_ixx" value="{wi["ixx"]}"/>')
+    w(f'  <xacro:property name="wheel_iyy" value="{wi["iyy"]}"/>')
+    w(f'  <xacro:property name="wheel_izz" value="{wi["izz"]}"/>')
+    w('')
+    w('  <!-- Wheel hub / axle inertia -->')
+    w(f'  <xacro:property name="wheel_link_ixx" value="{wli["ixx"]}"/>')
+    w(f'  <xacro:property name="wheel_link_iyy" value="{wli["iyy"]}"/>')
+    w(f'  <xacro:property name="wheel_link_izz" value="{wli["izz"]}"/>')
+    w('')
+    w('  <!-- Wheel joint positions (x and z shared; y differs L/R) -->')
+    w(f'  <xacro:property name="wheel_joint_x" value="{wheel_joint_x}"/>')
+    w(f'  <xacro:property name="wheel_joint_z" value="{wheel_joint_z}"/>')
+    w(f'  <xacro:property name="left_wheel_y"  value="{left_wheel_y}"/>')
+    w(f'  <xacro:property name="right_wheel_y" value="{right_wheel_y}"/>')
+    w('')
+    w('  <!-- Shared joint limits -->')
+    w('  <xacro:property name="joint_effort"   value="10"/>')
+    w('  <xacro:property name="joint_velocity" value="10"/>')
+    w('  <!-- Note: ${pi} is xacro built-in, no redeclaration needed -->')
+    w('')
+    w('  <!-- ════════════════════════ Macros ═══════════════════════════════ -->')
+    w('')
+    w('  <!-- Drive wheel (continuous joint) — left_wheel and right_wheel -->')
+    w('  <xacro:macro name="drive_wheel"')
+    w('               params="name mesh color_rgba')
+    w('                       visual_xyz visual_rpy')
+    w('                       joint_y joint_rpy">')
+    w('    <link name="${name}">')
+    w('      <inertial>')
+    w('        <origin xyz="0 0 -0.0275" rpy="0 0 0"/>')
+    w('        <mass value="${wheel_mass}"/>')
+    w('        <inertia ixx="${wheel_ixx}" ixy="0" ixz="0"')
+    w('                 iyy="${wheel_iyy}" iyz="0" izz="${wheel_izz}"/>')
+    w('      </inertial>')
+    w('      <visual>')
+    w('        <origin xyz="${visual_xyz}" rpy="${visual_rpy}"/>')
+    w('        <geometry>')
+    w(f'          <mesh filename="package://{pkg}/models/meshes/${{mesh}}.stl"/>')
+    w('        </geometry>')
+    w('        <material name="${name}_material">')
+    w('          <color rgba="${color_rgba}"/>')
+    w('        </material>')
+    w('      </visual>')
+    w('      <collision>')
+    w('        <origin xyz="${visual_xyz}" rpy="${visual_rpy}"/>')
+    w('        <geometry>')
+    w(f'          <mesh filename="package://{pkg}/models/meshes/${{mesh}}.stl"/>')
+    w('        </geometry>')
+    w('      </collision>')
+    w('    </link>')
+    w('    <joint name="${name}_joint" type="continuous">')
+    w('      <origin xyz="${wheel_joint_x} ${joint_y} ${wheel_joint_z}" rpy="${joint_rpy}"/>')
+    w('      <parent link="base_link"/>')
+    w('      <child link="${name}"/>')
+    w('      <axis xyz="0 0 1"/>')
+    w('      <limit effort="${joint_effort}" velocity="${joint_velocity}"/>')
+    w('    </joint>')
+    w('  </xacro:macro>')
+    w('')
+    w('  <!-- Wheel hub/axle (fixed joint) — left_wheel_link and right_wheel_link -->')
+    w('  <xacro:macro name="wheel_link_part"')
+    w('               params="name joint_name mesh color_rgba')
+    w('                       visual_xyz visual_rpy')
+    w('                       joint_y joint_rpy">')
+    w('    <link name="${name}">')
+    w('      <inertial>')
+    w('        <origin xyz="0 0 -0.0075" rpy="0 0 0"/>')
+    w('        <mass value="${wheel_link_mass}"/>')
+    w('        <inertia ixx="${wheel_link_ixx}" ixy="0" ixz="0"')
+    w('                 iyy="${wheel_link_iyy}" iyz="0" izz="${wheel_link_izz}"/>')
+    w('      </inertial>')
+    w('      <visual>')
+    w('        <origin xyz="${visual_xyz}" rpy="${visual_rpy}"/>')
+    w('        <geometry>')
+    w(f'          <mesh filename="package://{pkg}/models/meshes/${{mesh}}.stl"/>')
+    w('        </geometry>')
+    w('        <material name="${name}_material">')
+    w('          <color rgba="${color_rgba}"/>')
+    w('        </material>')
+    w('      </visual>')
+    w('      <collision>')
+    w('        <origin xyz="${visual_xyz}" rpy="${visual_rpy}"/>')
+    w('        <geometry>')
+    w(f'          <mesh filename="package://{pkg}/models/meshes/${{mesh}}.stl"/>')
+    w('        </geometry>')
+    w('      </collision>')
+    w('    </link>')
+    w('    <joint name="${joint_name}" type="fixed">')
+    w('      <origin xyz="${wheel_joint_x} ${joint_y} ${wheel_joint_z}" rpy="${joint_rpy}"/>')
+    w('      <parent link="base_link"/>')
+    w('      <child link="${name}"/>')
+    w('      <axis xyz="0 0 1"/>')
+    w('      <limit effort="${joint_effort}" velocity="${joint_velocity}"/>')
+    w('    </joint>')
+    w('  </xacro:macro>')
+    w('')
+    w('  <!-- ════════════════════ base_footprint ═══════════════════════════ -->')
+    w('  <!-- UNCOMMENT the block below when adding Nav2 navigation.         -->')
+    w('  <!-- Also update robot_base_frame in .gazebo to base_footprint.     -->')
+    w('  <!--')
+    w('  <link name="base_footprint"/>')
+    w('  <joint name="base_footprint_joint" type="fixed">')
+    w('    <parent link="base_footprint"/>')
+    w('    <child link="base_link"/>')
+    w('    <origin xyz="0 0 0" rpy="0 0 0"/>')
+    w('  </joint>')
+    w('  -->')
+    w('')
+    w('  <!-- ════════════════════════ base_link ════════════════════════════ -->')
+    w('  <link name="base_link">')
+    w('    <inertial>')
+    w(f'      <origin xyz="{bl_in_o.get("xyz")}" rpy="{bl_in_o.get("rpy")}"/>')
+    w('      <mass value="${base_mass}"/>')
+    w(f'      <inertia ixx="{bl_in_i["ixx"]}" ixy="{bl_in_i["ixy"]}" ixz="{bl_in_i["ixz"]}"')
+    w(f'               iyy="{bl_in_i["iyy"]}" iyz="{bl_in_i["iyz"]}" izz="{bl_in_i["izz"]}"/>')
+    w('    </inertial>')
+    w('    <visual>')
+    w(f'      <origin xyz="{bl_vis_o.get("xyz")}" rpy="{bl_vis_o.get("rpy")}"/>')
+    w('      <geometry>')
+    w(f'        <mesh filename="package://{pkg}/models/meshes/base_link.stl"/>')
+    w('      </geometry>')
+    w('      <material name="base_link_material">')
+    w(f'        <color rgba="{color("base_link")}"/>')
+    w('      </material>')
+    w('    </visual>')
+    w('    <collision>')
+    w(f'      <origin xyz="{bl_vis_o.get("xyz")}" rpy="{bl_vis_o.get("rpy")}"/>')
+    w('      <geometry>')
+    w(f'        <mesh filename="package://{pkg}/models/meshes/base_link.stl"/>')
+    w('      </geometry>')
+    w('    </collision>')
+    w('  </link>')
+    w('')
+    w('  <!-- ════════════════════════ Wheel hubs ════════════════════════════ -->')
+    w(f'  <xacro:wheel_link_part name="left_wheel_link"')
+    w(f'                         joint_name="left_joint"')
+    w(f'                         mesh="left_wheel_link"')
+    w(f'                         color_rgba="{color("left_wheel_link")}"')
+    w(f'                         visual_xyz="{lwl_vis_xyz}"')
+    w(f'                         visual_rpy="{lwl_vis_rpy}"')
+    w(f'                         joint_y="${{left_wheel_y}}"')
+    w(f'                         joint_rpy="{lj.find("origin").get("rpy")}"/>')
+    w('')
+    w(f'  <xacro:wheel_link_part name="right_wheel_link"')
+    w(f'                         joint_name="right_joint"')
+    w(f'                         mesh="right_wheel_link"')
+    w(f'                         color_rgba="{color("right_wheel_link")}"')
+    w(f'                         visual_xyz="{rwl_vis_xyz}"')
+    w(f'                         visual_rpy="{rwl_vis_rpy}"')
+    w(f'                         joint_y="${{right_wheel_y}}"')
+    w(f'                         joint_rpy="{rj.find("origin").get("rpy")}"/>')
+    w('')
+    w('  <!-- ════════════════════════ Drive wheels ══════════════════════════ -->')
+    w(f'  <xacro:drive_wheel name="left_wheel"')
+    w(f'                     mesh="left_wheel"')
+    w(f'                     color_rgba="{color("left_wheel")}"')
+    w(f'                     visual_xyz="{lw_vis_xyz}"')
+    w(f'                     visual_rpy="{lw_vis_rpy}"')
+    w(f'                     joint_y="${{left_wheel_y}}"')
+    w(f'                     joint_rpy="{lw_o.get("rpy")}"/>')
+    w('')
+    w(f'  <xacro:drive_wheel name="right_wheel"')
+    w(f'                     mesh="right_wheel"')
+    w(f'                     color_rgba="{color("right_wheel")}"')
+    w(f'                     visual_xyz="{rw_vis_xyz}"')
+    w(f'                     visual_rpy="{rw_vis_rpy}"')
+    w(f'                     joint_y="${{right_wheel_y}}"')
+    w(f'                     joint_rpy="{rw_o.get("rpy")}"/>')
+    w('')
+    w('  <!-- ════════════════════════ Lidar ═══════════════════════════════ -->')
+    w('  <link name="lidar">')
+    w('    <inertial>')
+    w(f'      <origin xyz="{ld_in_o.get("xyz")}" rpy="{ld_in_o.get("rpy")}"/>')
+    w('      <mass value="${lidar_mass}"/>')
+    w(f'      <inertia ixx="{ld_in_i["ixx"]}" ixy="{ld_in_i["ixy"]}" ixz="{ld_in_i["ixz"]}"')
+    w(f'               iyy="{ld_in_i["iyy"]}" iyz="{ld_in_i["iyz"]}" izz="{ld_in_i["izz"]}"/>')
+    w('    </inertial>')
+    w('    <visual>')
+    w(f'      <origin xyz="{ld_vis_o.get("xyz")}" rpy="${{pi}} -0 0"/>')
+    w('      <geometry>')
+    w(f'        <mesh filename="package://{pkg}/models/meshes/lidar.stl"/>')
+    w('      </geometry>')
+    w('      <material name="lidar_material">')
+    w(f'        <color rgba="{color("lidar")}"/>')
+    w('      </material>')
+    w('    </visual>')
+    w('    <collision>')
+    w(f'      <origin xyz="{ld_vis_o.get("xyz")}" rpy="${{pi}} -0 0"/>')
+    w('      <geometry>')
+    w(f'        <mesh filename="package://{pkg}/models/meshes/lidar.stl"/>')
+    w('      </geometry>')
+    w('    </collision>')
+    w('  </link>')
+    w('  <joint name="lidar_joint" type="revolute">')
+    w(f'    <origin xyz="{ld_jnt.find("origin").get("xyz")}" rpy="${{pi}} -0 0"/>')
+    w('    <parent link="base_link"/>')
+    w('    <child link="lidar"/>')
+    w('    <axis xyz="0 0 1"/>')
+    w('    <limit effort="${joint_effort}" velocity="${joint_velocity}"')
+    w('           lower="-${pi}" upper="${pi}"/>')
+    w('  </joint>')
+    w('')
+    w('  <!-- ════════════════════════ Caster ══════════════════════════════ -->')
+    w('  <link name="caster">')
+    w('    <inertial>')
+    w(f'      <origin xyz="{ca_in_o.get("xyz")}" rpy="{ca_in_o.get("rpy")}"/>')
+    w('      <mass value="${caster_mass}"/>')
+    w(f'      <inertia ixx="{ca_in_i["ixx"]}" ixy="{ca_in_i["ixy"]}" ixz="{ca_in_i["ixz"]}"')
+    w(f'               iyy="{ca_in_i["iyy"]}" iyz="{ca_in_i["iyz"]}" izz="{ca_in_i["izz"]}"/>')
+    w('    </inertial>')
+    w('    <visual>')
+    w(f'      <origin xyz="{ca_vis_o.get("xyz")}" rpy="{ca_vis_o.get("rpy")}"/>')
+    w('      <geometry>')
+    w(f'        <mesh filename="package://{pkg}/models/meshes/caster.stl"/>')
+    w('      </geometry>')
+    w('      <material name="caster_material">')
+    w(f'        <color rgba="{color("caster")}"/>')
+    w('      </material>')
+    w('    </visual>')
+    w('    <collision>')
+    w(f'      <origin xyz="{ca_vis_o.get("xyz")}" rpy="{ca_vis_o.get("rpy")}"/>')
+    w('      <geometry>')
+    w(f'        <mesh filename="package://{pkg}/models/meshes/caster.stl"/>')
+    w('      </geometry>')
+    w('    </collision>')
+    w('  </link>')
+    w('  <joint name="caster_joint" type="fixed">')
+    w(f'    <origin xyz="{ca_jnt.find("origin").get("xyz")}" rpy="{ca_jnt.find("origin").get("rpy")}"/>')
+    w('    <parent link="base_link"/>')
+    w('    <child link="caster"/>')
+    w('    <axis xyz="0 0 1"/>')
+    w('    <limit effort="${joint_effort}" velocity="${joint_velocity}"/>')
+    w('  </joint>')
+    w('')
+    w('</robot>')
+
+    return "\n".join(L) + "\n"
+
+
+def _urdf_to_xacro_flat_content(urdf_path: Path) -> str:
+    """
+    Flat (tortoisebot) style xacro:
+      - No properties, no macros — every link/joint written explicitly
+      - xacro:include stub at the top for future .gazebo files
+      - package://pkg/meshes/name.stl URIs
+      - No <limit> on continuous/fixed joints (matches ROS 2 convention)
+    """
+    tree = ET.parse(urdf_path)
+    root = tree.getroot()
+    robot_name = root.get("name", "robot")
+    pkg = f"{robot_name}_description"
+
+    L = []
+    w = L.append
+
+    w('<?xml version="1.0"?>')
+    w(f'<!-- Generated from {urdf_path.name} by meshflow -->')
+    w(f'<robot name="{robot_name}" xmlns:xacro="http://www.ros.org/wiki/xacro">')
+    w('')
+    w(f'  <!-- Gazebo includes — uncomment when ready for simulation -->')
+    w(f'  <!-- <xacro:include filename="$(find {pkg})/gazebo/{robot_name}.gazebo"/> -->')
+    w('')
+    w('  <!-- ══════════════════ base_footprint ════════════════════════════ -->')
+    w('  <!-- UNCOMMENT the block below when adding Nav2 navigation.        -->')
+    w('  <!-- Nav2 expects base_footprint as the root TF frame for          -->')
+    w('  <!-- cost maps and robot footprint calculations.                   -->')
+    w('  <!-- Also update robot_base_frame in your .gazebo diff_drive plugin-->')
+    w('  <!-- from base_link to base_footprint when uncommenting.           -->')
+    w('  <!--')
+    w('  <link name="base_footprint"/>')
+    w('  <joint name="base_footprint_joint" type="fixed">')
+    w('    <parent link="base_footprint"/>')
+    w('    <child link="base_link"/>')
+    w('    <origin xyz="0 0 0" rpy="0 0 0"/>')
+    w('  </joint>')
+    w('  -->')
+    w('')
+
+    def _mesh_filename(mesh_el) -> str:
+        raw  = mesh_el.get("filename", "")
+        name = raw.split("/")[-1]
+        return f"package://{pkg}/models/meshes/{name}"
+
+    for link in root.findall("link"):
+        lname     = link.get("name")
+        inertial  = link.find("inertial")
+        visual    = link.find("visual")
+        collision = link.find("collision")
+
+        w(f'  <!-- ── {lname} ── -->')
+        w(f'  <link name="{lname}">')
+
+        if inertial is not None:
+            in_o = inertial.find("origin")
+            in_m = inertial.find("mass")
+            in_i = _inertia_attrs(inertial)
+            w('    <inertial>')
+            if in_o is not None:
+                w(f'      <origin xyz="{in_o.get("xyz","0 0 0")}" rpy="{in_o.get("rpy","0 0 0")}"/>')
+            if in_m is not None:
+                w(f'      <mass value="{in_m.get("value")}"/>')
+            w(f'      <inertia ixx="{in_i["ixx"]}" ixy="{in_i["ixy"]}" ixz="{in_i["ixz"]}"')
+            w(f'               iyy="{in_i["iyy"]}" iyz="{in_i["iyz"]}" izz="{in_i["izz"]}"/>')
+            w('    </inertial>')
+
+        if visual is not None:
+            vis_o = visual.find("origin")
+            mesh  = visual.find("geometry/mesh")
+            mat   = visual.find("material")
+            color = mat.find("color") if mat is not None else None
+            w('    <visual>')
+            if vis_o is not None:
+                w(f'      <origin xyz="{vis_o.get("xyz","0 0 0")}" rpy="{vis_o.get("rpy","0 0 0")}"/>')
+            if mesh is not None:
+                w(f'      <geometry>')
+                w(f'        <mesh filename="{_mesh_filename(mesh)}"/>')
+                w(f'      </geometry>')
+            if color is not None:
+                w(f'      <material name="{mat.get("name", lname + "_material")}">')
+                w(f'        <color rgba="{color.get("rgba")}"/>')
+                w(f'      </material>')
+            w('    </visual>')
+
+        if collision is not None:
+            col_o = collision.find("origin")
+            mesh  = collision.find("geometry/mesh")
+            w('    <collision>')
+            if col_o is not None:
+                w(f'      <origin xyz="{col_o.get("xyz","0 0 0")}" rpy="{col_o.get("rpy","0 0 0")}"/>')
+            if mesh is not None:
+                w(f'      <geometry>')
+                w(f'        <mesh filename="{_mesh_filename(mesh)}"/>')
+                w(f'      </geometry>')
+            w('    </collision>')
+
+        w('  </link>')
+        w('')
+
+    for joint in root.findall("joint"):
+        jname  = joint.get("name")
+        jtype  = joint.get("type")
+        origin = joint.find("origin")
+        parent = joint.find("parent")
+        child  = joint.find("child")
+        axis   = joint.find("axis")
+        limit  = joint.find("limit")
+
+        w(f'  <!-- ── {jname} ({jtype}) ── -->')
+        w(f'  <joint name="{jname}" type="{jtype}">')
+        if origin is not None:
+            w(f'    <origin xyz="{origin.get("xyz","0 0 0")}" rpy="{origin.get("rpy","0 0 0")}"/>')
+        if parent is not None:
+            w(f'    <parent link="{parent.get("link")}"/>')
+        if child is not None:
+            w(f'    <child link="{child.get("link")}"/>')
+        if axis is not None:
+            w(f'    <axis xyz="{axis.get("xyz")}"/>')
+        if limit is not None and jtype in ("revolute", "prismatic"):
+            parts = " ".join(
+                f'{k}="{limit.get(k)}"' for k in ("effort","velocity","lower","upper")
+                if limit.get(k) is not None
+            )
+            w(f'    <limit {parts}/>')
+        w('  </joint>')
+        w('')
+
+    w('</robot>')
+    return "\n".join(L) + "\n"
+
+
+def generate_xacro(output_dir: Path, robot_name: str, macro_based: bool = False) -> None:
+    style = "macro-based" if macro_based else "flat"
+    _banner(f"Generating Xacro ({style} style)")
+    urdf_path  = output_dir / "models" / "urdf" / f"{robot_name}.urdf"
+    xacro_path = output_dir / "models" / "urdf" / f"{robot_name}.urdf.xacro"
+
+    if not urdf_path.exists():
+        print(f"  [WARN] URDF not found at {urdf_path}, skipping xacro generation.")
+        return
+
+    try:
+        content = (_urdf_to_xacro_content(urdf_path) if macro_based
+                   else _urdf_to_xacro_flat_content(urdf_path))
+        xacro_path.write_text(content)
+        print(f"  Generated urdf/{robot_name}.urdf.xacro  ({len(content.splitlines())} lines)  [{style}]")
+    except Exception as exc:
+        print(f"  [WARN] Xacro generation failed: {exc}")
+
+
+def validate_xacro(output_dir: Path, robot_name: str) -> None:
+    xacro_path = output_dir / "models" / "urdf" / f"{robot_name}.urdf.xacro"
+    if not xacro_path.exists():
+        return
+
+    xacro_bin = shutil.which("xacro")
+    check_bin = shutil.which("check_urdf")
+
+    if not xacro_bin:
+        print("  [WARN] xacro not found in PATH, skipping xacro validation.")
+        return
+
+    print("\n  Validating xacro (xacro → check_urdf) …")
+    with tempfile.NamedTemporaryFile(suffix=".urdf", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+
+    try:
+        result = subprocess.run(
+            [xacro_bin, str(xacro_path)],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"  [WARN] xacro expansion failed:\n{result.stderr.strip()}")
+            return
+        tmp_path.write_text(result.stdout)
+
+        warnings = [
+            line for line in result.stderr.splitlines()
+            if line.strip() and "redefining global symbol" not in line
+        ]
+        if warnings:
+            print("  xacro warnings:\n  " + "\n  ".join(warnings))
+
+        if check_bin:
+            ck = subprocess.run(
+                [check_bin, str(tmp_path)],
+                capture_output=True, text=True
+            )
+            if ck.returncode == 0:
+                for line in ck.stdout.splitlines():
+                    if "root Link" in line or "Successfully" in line:
+                        print(f"  {line.strip()}")
+                print("  Xacro validation passed ✓")
+            else:
+                print("  [WARN] check_urdf on expanded xacro reported issues:")
+                print("  ", ck.stdout or ck.stderr)
+        else:
+            print("  check_urdf not found — xacro expanded OK but not fully validated.")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Sensor plugin XML blocks
+# ---------------------------------------------------------------------------
+
+def _write_lidar_plugin(L: list, node, config: dict) -> None:
+    d = config['defaults']
+    link = node.link_name
+    L.append(f'  <gazebo reference="{link}">')
+    L.append('    <mu1>0.2</mu1>')
+    L.append('    <mu2>0.2</mu2>')
+    L.append('    <material>Gazebo/Purple</material>')
+    L.append('    <sensor name="lidar_sensor" type="ray">')
+    L.append('      <always_on>true</always_on>')
+    L.append('      <visualize>false</visualize>')
+    L.append(f'      <update_rate>{d["update_rate"]}</update_rate>')
+    L.append('      <ray>')
+    L.append('        <scan>')
+    L.append('          <horizontal>')
+    L.append(f'            <samples>{d["samples"]}</samples>')
+    L.append('            <resolution>1.0</resolution>')
+    L.append(f'            <min_angle>{d["min_angle"]}</min_angle>')
+    L.append(f'            <max_angle>{d["max_angle"]}</max_angle>')
+    L.append('          </horizontal>')
+    L.append('        </scan>')
+    L.append('        <range>')
+    L.append(f'          <min>{d["range_min"]}</min>')
+    L.append(f'          <max>{d["range_max"]}</max>')
+    L.append('          <resolution>0.01</resolution>')
+    L.append('        </range>')
+    L.append('        <noise>')
+    L.append('          <type>gaussian</type>')
+    L.append('          <mean>0.0</mean>')
+    L.append('          <stddev>0.01</stddev>')
+    L.append('        </noise>')
+    L.append('      </ray>')
+    L.append(f'      <plugin name="scan" filename="{config["plugin_file"]}">')
+    L.append('        <ros>')
+    L.append('          <remapping>~/out:=scan</remapping>')
+    L.append('        </ros>')
+    L.append('        <output_type>sensor_msgs/LaserScan</output_type>')
+    L.append(f'        <frame_name>{link}</frame_name>')
+    L.append('      </plugin>')
+    L.append('    </sensor>')
+    L.append('  </gazebo>')
+    L.append('')
+
+
+def _write_camera_plugin(L: list, node, config: dict) -> None:
+    d = config['defaults']
+    link = node.link_name
+    L.append(f'  <gazebo reference="{link}">')
+    L.append(f'    <sensor name="camera_sensor" type="camera">')
+    L.append('      <always_on>true</always_on>')
+    L.append('      <visualize>true</visualize>')
+    L.append(f'      <update_rate>{d["update_rate"]}</update_rate>')
+    L.append('      <camera>')
+    L.append(f'        <horizontal_fov>{d["fov"]}</horizontal_fov>')
+    L.append('        <image>')
+    L.append(f'          <width>{d["width"]}</width>')
+    L.append(f'          <height>{d["height"]}</height>')
+    L.append('          <format>R8G8B8</format>')
+    L.append('        </image>')
+    L.append('        <clip><near>0.1</near><far>100</far></clip>')
+    L.append('      </camera>')
+    L.append(f'      <plugin name="camera" filename="{config["plugin_file"]}">')
+    L.append('        <ros>')
+    L.append('          <remapping>~/image_raw:=camera/image_raw</remapping>')
+    L.append('        </ros>')
+    L.append(f'        <frame_name>{link}</frame_name>')
+    L.append('      </plugin>')
+    L.append('    </sensor>')
+    L.append('  </gazebo>')
+    L.append('')
+
+
+def _write_depth_plugin(L: list, node, config: dict) -> None:
+    d = config['defaults']
+    link = node.link_name
+    L.append(f'  <gazebo reference="{link}">')
+    L.append(f'    <sensor name="depth_sensor" type="depth">')
+    L.append('      <always_on>true</always_on>')
+    L.append('      <visualize>true</visualize>')
+    L.append(f'      <update_rate>{d["update_rate"]}</update_rate>')
+    L.append('      <camera>')
+    L.append(f'        <horizontal_fov>{d["fov"]}</horizontal_fov>')
+    L.append('        <image>')
+    L.append(f'          <width>{d["width"]}</width>')
+    L.append(f'          <height>{d["height"]}</height>')
+    L.append('        </image>')
+    L.append('        <clip><near>0.05</near><far>10</far></clip>')
+    L.append('      </camera>')
+    L.append(f'      <plugin name="depth_camera" filename="{config["plugin_file"]}">')
+    L.append('        <ros>')
+    L.append('          <remapping>~/image_raw:=depth/image_raw</remapping>')
+    L.append('        </ros>')
+    L.append(f'        <frame_name>{link}</frame_name>')
+    L.append('      </plugin>')
+    L.append('    </sensor>')
+    L.append('  </gazebo>')
+    L.append('')
+
+
+def _write_imu_plugin(L: list, node, config: dict) -> None:
+    d = config['defaults']
+    link = node.link_name
+    L.append(f'  <gazebo reference="{link}">')
+    L.append(f'    <sensor name="imu_sensor" type="imu">')
+    L.append('      <always_on>true</always_on>')
+    L.append(f'      <update_rate>{d["update_rate"]}</update_rate>')
+    L.append('      <imu/>')
+    L.append(f'      <plugin name="imu" filename="{config["plugin_file"]}">')
+    L.append('        <ros>')
+    L.append('          <remapping>~/out:=imu</remapping>')
+    L.append('        </ros>')
+    L.append(f'        <frame_name>{link}</frame_name>')
+    L.append('      </plugin>')
+    L.append('    </sensor>')
+    L.append('  </gazebo>')
+    L.append('')
+
+
+_SENSOR_WRITERS = {
+    "lidar_revolute": _write_lidar_plugin,
+    "lidar_fixed":    _write_lidar_plugin,
+    "camera_rgb":     _write_camera_plugin,
+    "depth_camera":   _write_depth_plugin,
+    "imu":            _write_imu_plugin,
+}
+
+
+# ---------------------------------------------------------------------------
+# generate_gazebo_file — uses URDFTraits (no URDF re-parsing)
+# ---------------------------------------------------------------------------
+
+def generate_gazebo_file(
+    output_dir: Path,
+    robot_name: str,
+    pkg_name:   str,
+    traits:     URDFTraits,
+) -> None:
+    _banner("Generating Gazebo Plugin File")
+
+    gazebo_dir = output_dir / "gazebo"
+    gazebo_dir.mkdir(exist_ok=True)
+    out_path = gazebo_dir / f"{robot_name}.gazebo"
+
+    if not traits.drive_wheels:
+        print("  [WARN] No drive wheels detected — .gazebo will have no drive plugin.")
+
+    lw = traits.left_wheel
+    rw = traits.right_wheel
+    sep = traits.wheel_separation
+    dia = traits.wheel_diameter
+
+    L: list[str] = []
+    w = L.append
+
+    w('<?xml version="1.0"?>')
+    w(f'<!-- Gazebo simulation plugins for {robot_name} -->')
+    w(f'<!-- Auto-generated by meshflow from {robot_name}.urdf -->')
+    w(f'<!--')
+    w(f'  Include in xacro (uncomment when ready):')
+    w(f'    <xacro:include filename="$(find {pkg_name})/gazebo/{robot_name}.gazebo"/>')
+    w(f'')
+    if lw and rw:
+        w(f'  Detected: left={lw.joint_name}  right={rw.joint_name}')
+    w(f'  separation={sep}m  diameter={dia}m')
+    w(f'  sensor joints: {[s.joint_name for s in traits.sensors if s.joint_type=="revolute"]}')
+    w(f'')
+    w(f'  NOTE: If you uncomment base_footprint in the xacro,')
+    w(f'  change robot_base_frame below from base_link to base_footprint.')
+    w(f'-->')
+    w('<robot>')
+    w('')
+
+    # ── Drive plugin ──────────────────────────────────────────────────────
+    w('  <!-- ═══════════════════════════════════════════════════')
+    if traits.drive_plugin == "libgazebo_ros_skid_steer_drive.so":
+        w('       SKID STEER DRIVE PLUGIN')
+    else:
+        w('       DIFFERENTIAL DRIVE PLUGIN')
+    w('       /cmd_vel → moves robot   /odom → odometry out')
+    w('       ═══════════════════════════════════════════════════ -->')
+    w('  <gazebo>')
+
+    if traits.drive_plugin == "libgazebo_ros_skid_steer_drive.so" and len(traits.drive_wheels) >= 4:
+        half = len(traits.drive_wheels) // 2
+        right_side = sorted(traits.drive_wheels[:half],  key=lambda n: n.global_T[0, 3], reverse=True)
+        left_side  = sorted(traits.drive_wheels[half:],  key=lambda n: n.global_T[0, 3], reverse=True)
+        lf = left_side[0]
+        lr = left_side[1] if len(left_side) > 1 else left_side[0]
+        rf = right_side[0]
+        rr = right_side[1] if len(right_side) > 1 else right_side[0]
+        w(f'    <plugin name="skid_steer_drive" filename="{traits.drive_plugin}">')
+        w('      <ros>')
+        w('        <!-- empty = global namespace → /cmd_vel /odom -->')
+        w('      </ros>')
+        w(f'      <left_front_joint>{lf.joint_name}</left_front_joint>')
+        w(f'      <right_front_joint>{rf.joint_name}</right_front_joint>')
+        w(f'      <left_rear_joint>{lr.joint_name}</left_rear_joint>')
+        w(f'      <right_rear_joint>{rr.joint_name}</right_rear_joint>')
+        w(f'      <wheel_separation>{sep}</wheel_separation>')
+        w(f'      <wheel_diameter>{dia}</wheel_diameter>')
+        w('      <max_wheel_torque>20</max_wheel_torque>')
+        w('      <max_wheel_acceleration>1.0</max_wheel_acceleration>')
+        w('      <publish_odom>true</publish_odom>')
+        w('      <publish_odom_tf>true</publish_odom_tf>')
+        w('      <odometry_frame>odom</odometry_frame>')
+        w('      <robot_base_frame>base_link</robot_base_frame>')
+    else:
+        # diff_drive (2 wheels, or >4 fallback using outer pair)
+        lj_name = lw.joint_name if lw else "left_wheel_joint"
+        rj_name = rw.joint_name if rw else "right_wheel_joint"
+        w(f'    <plugin name="diff_drive" filename="{traits.drive_plugin}">')
+        w('      <ros>')
+        w('        <!-- empty = global namespace → /cmd_vel /odom -->')
+        w('      </ros>')
+        w(f'      <left_joint>{lj_name}</left_joint>')
+        w(f'      <right_joint>{rj_name}</right_joint>')
+        w(f'      <wheel_separation>{sep}</wheel_separation>')
+        w(f'      <wheel_diameter>{dia}</wheel_diameter>')
+        w('      <max_wheel_torque>10</max_wheel_torque>')
+        w('      <max_wheel_acceleration>2.0</max_wheel_acceleration>')
+        w('      <publish_odom>true</publish_odom>')
+        w('      <publish_odom_tf>true</publish_odom_tf>')
+        w('      <publish_wheel_tf>false</publish_wheel_tf>')
+        w('      <odometry_frame>odom</odometry_frame>')
+        w('      <robot_base_frame>base_link</robot_base_frame>')
+
+    w('    </plugin>')
+    w('  </gazebo>')
+    w('')
+
+    # ── Joint state publisher ────────────────────────────────────────────
+    w('  <!-- ═══════════════════════════════════════════════════')
+    w('       JOINT STATE PUBLISHER')
+    w('       → /joint_states so RSP can broadcast TF for moving joints')
+    w('       ═══════════════════════════════════════════════════ -->')
+    w('  <gazebo>')
+    w('    <plugin name="gazebo_ros_joint_state_publisher"')
+    w('            filename="libgazebo_ros_joint_state_publisher.so">')
+    w('      <update_rate>30</update_rate>')
+    for jname in traits.movable_joint_names:
+        w(f'      <joint_name>{jname}</joint_name>')
+    w('    </plugin>')
+    w('  </gazebo>')
+    w('')
+
+    # ── Sensor plugin blocks ─────────────────────────────────────────────
+    if traits.sensors:
+        w('  <!-- ═══════════════════════════════════════════════════')
+        w('       SENSOR PLUGINS')
+        w('       ═══════════════════════════════════════════════════ -->')
+    for sensor_node in traits.sensors:
+        matched = False
+        for sensor_type, config in SENSOR_PLUGINS.items():
+            try:
+                if config['match'](sensor_node):
+                    writer = _SENSOR_WRITERS.get(sensor_type)
+                    if writer:
+                        writer(L, sensor_node, config)
+                    matched = True
+                    break
+            except Exception:
+                pass
+        if not matched:
+            print(f"  [WARN] Could not classify sensor '{sensor_node.link_name}' "
+                  f"(joint_type={sensor_node.joint_type}) — no plugin block generated.")
+            if sensor_node.joint_type == 'fixed':
+                print("         Install trimesh for geometry-based sensor classification.")
+    w('')
+
+    # ── Friction + material ──────────────────────────────────────────────
+    w('  <!-- ═══════════════════════════════════════════════════')
+    w('       FRICTION + MATERIAL per link')
+    w('       ═══════════════════════════════════════════════════ -->')
+    w('  <gazebo reference="base_link">')
+    w('    <mu1>0.2</mu1>')
+    w('    <mu2>0.2</mu2>')
+    w('    <gravity>true</gravity>')
+    w('    <material>Gazebo/Turquoise</material>')
+    w('  </gazebo>')
+    w('')
+
+    for wheel_node in traits.drive_wheels:
+        w(f'  <gazebo reference="{wheel_node.link_name}">')
+        w('    <mu1>1.0</mu1>')
+        w('    <mu2>1.0</mu2>')
+        w('    <kp>500000.0</kp>')
+        w('    <kd>10.0</kd>')
+        w('    <minDepth>0.001</minDepth>')
+        w('    <material>Gazebo/DarkGrey</material>')
+        w('  </gazebo>')
+        w('')
+
+    for caster_node in traits.passive_contacts:
+        w(f'  <gazebo reference="{caster_node.link_name}">')
+        w('    <mu1>0.0</mu1>')
+        w('    <mu2>0.0</mu2>')
+        w('    <kp>1000000.0</kp>')
+        w('    <kd>100.0</kd>')
+        w('    <material>Gazebo/Grey</material>')
+        w('  </gazebo>')
+        w('')
+
+    w('')
+    w('</robot>')
+
+    out_path.write_text('\n'.join(L) + '\n')
+    print(f"  Generated gazebo/{robot_name}.gazebo")
+    print(f"    wheel_separation={sep}m  wheel_diameter={dia}m")
+    print(f"    sensor joints: {[s.joint_name for s in traits.sensors if s.joint_type=='revolute']}")
+    print(f"  Tip: uncomment xacro:include in the xacro file to activate plugins!")

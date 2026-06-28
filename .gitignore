@@ -1,0 +1,28 @@
+# prototype / dev notes
+convert.py
+meshflow.md
+
+# secrets
+.env
+
+# build artifacts
+build/
+dist/
+*.egg-info/
+UNKNOWN.egg-info/
+
+# virtual env
+.venv/
+uv.lock
+
+# generated output
+output/
+
+# test cache
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# editor
+.vscode/
+.idea/

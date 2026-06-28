@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshflow"
+version = "1.0.0"
+description = "Onshape → ROS 2 package generator for DDR robots"
+requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv",
+    "numpy",
+    "trimesh",
+    "onshape-to-robot>=1.8.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+meshflow = "meshflow.cli:main"
