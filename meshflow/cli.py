@@ -2,12 +2,13 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from .detector import KinematicDAG, URDFTraits
 from .generator import generate_gazebo_file, generate_xacro, validate_xacro
-from .onshape import build_config, load_api_keys, parse_onshape_url, run_conversion
+from .onshape import CONFIG_FILE, build_config, load_api_keys, parse_onshape_url, run_conversion
 from .restructure import restructure_for_ros2, validate_urdf
 
 
@@ -29,14 +30,42 @@ def die(message: str) -> None:
     sys.exit(1)
 
 
-def main() -> None:
-    _banner("Onshape → URDF Converter (ROS 2 Edition)")
+def _cmd_init() -> None:
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    print("\nLoading API keys from .env …")
+    if not CONFIG_FILE.exists():
+        CONFIG_FILE.write_text(
+            "ONSHAPE_ACCESS_KEY=your_access_key_here\n"
+            "ONSHAPE_SECRET_KEY=your_secret_key_here\n"
+        )
+        print(f"\n  Created config at {CONFIG_FILE}")
+        print("  Replace the placeholder values with your Onshape API keys.")
+        print("  Get them at: Onshape → Account menu → API Keys\n")
+    else:
+        print(f"\n  Config exists at {CONFIG_FILE} — opening for editing.\n")
+
+    editor = os.environ.get("EDITOR", "nano")
+    try:
+        subprocess.run([editor, str(CONFIG_FILE)])
+    except FileNotFoundError:
+        print(f"  Could not open editor '{editor}'. Edit the file manually:")
+        print(f"    {CONFIG_FILE}\n")
+        return
+
+    print(f"\n  Done. Run 'meshflow' from anywhere to start converting.\n")
+
+
+def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "init":
+        _cmd_init()
+        return
+
     access_key, secret_key = load_api_keys()
     os.environ["ONSHAPE_API"]        = "https://cad.onshape.com"
     os.environ["ONSHAPE_ACCESS_KEY"] = access_key
     os.environ["ONSHAPE_SECRET_KEY"] = secret_key
+
+    _banner("Onshape → URDF Converter (ROS 2 Edition)")
 
     url = ask("\nOnshape URL")
     if not url:
@@ -108,8 +137,7 @@ def main() -> None:
     {safe_name}.urdf.xacro  ← xacro for Gazebo simulation
 
   Gazebo simulation:
-    1. Uncomment the xacro:include line in the xacro file
-    2. ros2 launch {pkg_name} gazebo.launch.py
+    ros2 launch {pkg_name} gazebo.launch.py
 
   RViz tip: Fixed Frame = odom when running Gazebo.
 """)

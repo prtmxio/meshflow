@@ -7,10 +7,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+CONFIG_FILE = Path.home() / ".config" / "meshflow" / ".env"
+
 _URL_PATTERN = re.compile(
     r"https://[^/]+/documents/(?P<documentId>[a-f0-9]+)/w/(?P<workspaceId>[a-f0-9]+)/e/(?P<elementId>[a-f0-9]+)",
     re.IGNORECASE,
 )
+
+_PLACEHOLDERS = {"your_access_key_here", "your_secret_key_here", ""}
 
 
 def _die(msg: str) -> None:
@@ -19,16 +23,15 @@ def _die(msg: str) -> None:
 
 
 def load_api_keys() -> tuple[str, str]:
-    env_file = Path(".env")
-    if not env_file.exists():
-        _die("No .env file found. Copy .env.example to .env and add keys.")
+    if not CONFIG_FILE.exists():
+        _die("No config found. Run 'meshflow init' to set up your Onshape API keys.")
 
-    load_dotenv(env_file)
+    load_dotenv(CONFIG_FILE)
     access_key = os.getenv("ONSHAPE_ACCESS_KEY", "").strip()
     secret_key = os.getenv("ONSHAPE_SECRET_KEY", "").strip()
 
-    if not access_key or not secret_key:
-        _die("Missing ONSHAPE_ACCESS_KEY or ONSHAPE_SECRET_KEY in .env.")
+    if access_key in _PLACEHOLDERS or secret_key in _PLACEHOLDERS:
+        _die("API keys not set. Run 'meshflow init' to edit your config.")
     return access_key, secret_key
 
 
