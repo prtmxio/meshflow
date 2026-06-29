@@ -55,7 +55,43 @@ def _cmd_init() -> None:
     print(f"\n  Done. Run 'meshflow' from anywhere to start converting.\n")
 
 
+def _cmd_help() -> None:
+    print("""
+meshflow — Onshape → ROS 2 package generator
+
+USAGE
+  meshflow [command]
+
+COMMANDS
+  (none)    Convert an Onshape assembly URL → full ROS 2 description package
+  init      Create or edit the API key config (~/.config/meshflow/.env)
+  --help    Show this help message
+
+WORKFLOW
+  1. meshflow init         Set your Onshape API keys (one-time setup)
+  2. meshflow              Paste an Onshape URL and answer prompts
+  3. cp -r output/<pkg> ~/ros2_ws/src/
+     cd ~/ros2_ws && colcon build --packages-select <pkg>
+     source install/setup.zsh
+     ros2 launch <pkg> gazebo.launch.py
+
+OUTPUT (urdf mode)
+  <pkg>/models/urdf/<robot>.urdf          flat URDF  (display.launch.py)
+  <pkg>/models/urdf/<robot>.urdf.xacro    xacro with Gazebo plugins included
+  <pkg>/gazebo/<robot>.gazebo             diff-drive + lidar + friction plugins
+  <pkg>/launch/display.launch.py          RViz preview (no colcon needed)
+  <pkg>/launch/gazebo.launch.py           full Gazebo simulation
+
+DOCS
+  https://github.com/prtmxio/meshflow
+""")
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h", "help"):
+        _cmd_help()
+        return
+
     if len(sys.argv) > 1 and sys.argv[1] == "init":
         _cmd_init()
         return
