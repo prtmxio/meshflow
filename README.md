@@ -88,8 +88,11 @@ meshflow reads your CAD via the Onshape REST API. You need a free API key pair.
 
 **Get your keys:**
 1. Log in to [Onshape](https://cad.onshape.com)
-2. Click your account avatar → **API Keys**
-3. Click **Create new API key** → copy the Access Key and Secret Key
+2. Click your profile avatar (top right) → **My Account**
+3. Go to the **Developer** tab
+4. Click the **API Keys** link
+5. Click **Create new API key**
+6. Copy **both** the Access Key and Secret Key before closing — the secret is only shown once
 
 **Save them:**
 
