@@ -9,7 +9,7 @@ from pathlib import Path
 from .detector import KinematicDAG, URDFTraits
 from .generator import generate_gazebo_file, generate_xacro, validate_xacro
 from .onshape import CONFIG_FILE, build_config, load_api_keys, parse_onshape_url, run_conversion
-from .restructure import restructure_for_ros2, validate_urdf
+from .restructure import restructure_for_ros2, validate_urdf, write_gazebo_launch
 
 
 def _banner(text: str) -> None:
@@ -154,13 +154,18 @@ def main() -> None:
             traits = URDFTraits.from_dag(dag)
             drive_wheel_joints = {n.joint_name for n in traits.drive_wheels}
 
+        robot_kind = traits.robot_kind if traits else "wheeled"
         generate_xacro(output_dir, safe_name, macro_based=macro_based,
                        drive_wheel_joints=drive_wheel_joints,
-                       passive_joints=traits.passive_joints if traits else frozenset())
+                       passive_joints=traits.passive_joints if traits else frozenset(),
+                       robot_kind=robot_kind)
         validate_xacro(output_dir, safe_name)
 
         if traits is not None:
             generate_gazebo_file(output_dir, safe_name, pkg_name, traits)
+            # Overwrite the launch file now that robot_kind is known
+            launch_dir = output_dir / "launch"
+            write_gazebo_launch(launch_dir, safe_name, pkg_name, robot_kind=robot_kind)
         else:
             print("  [WARN] URDF not found — skipping Gazebo plugin generation.")
 

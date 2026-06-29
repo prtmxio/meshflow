@@ -368,6 +368,7 @@ class URDFTraits:
     drive_plugin:     str    # libgazebo_ros_diff_drive.so or ..._skid_steer_drive.so
     root_link:        str
     passive_joints:   set    # joint names to emit as fixed in xacro (passive rollers on omni wheels)
+    robot_kind:       str    # "wheeled" | "legged" | "arm" | "unknown"
 
     @property
     def movable_joint_names(self) -> list[str]:
@@ -387,10 +388,11 @@ class URDFTraits:
         Y_HAT = np.array([0.0, 1.0, 0.0])
 
         def _classify(node: KinematicNode, parent_is_wheel: bool = False,
-                      siblings: list | None = None) -> None:
+                      siblings: list | None = None,
+                      parent_joint_type: str = 'root') -> None:
             if node.joint_type == 'root':
                 for child in node.children:
-                    _classify(child, siblings=node.children)
+                    _classify(child, siblings=node.children, parent_joint_type='root')
                 return
 
             jt     = node.joint_type
@@ -400,8 +402,10 @@ class URDFTraits:
 
             is_drive_wheel = (not parent_is_wheel
                               and jt in ('continuous', 'revolute')
+                              and parent_joint_type in ('root', 'fixed')  # body-attached only
                               and z_dot < 0.5
-                              and z_min < 0.20)
+                              and z_min < 0.20
+                              and _is_leaf_or_fixed_children(node))       # no non-fixed children
 
             def _has_colocated_wheel_sibling() -> bool:
                 if not siblings:
@@ -424,7 +428,8 @@ class URDFTraits:
                 passive_contacts.append(node)
 
             # ── Rotating sensor (revolute lidar) ──────────────────────────
-            elif jt == 'revolute' and y_dot < 0.5 and not parent_is_wheel:
+            elif (jt == 'revolute' and y_dot < 0.5 and not parent_is_wheel
+                  and _is_leaf_or_fixed_children(node)):
                 sensors.append(node)
 
             # ── Fixed sensor (camera / IMU / depth / fixed lidar) ─────────
@@ -446,7 +451,8 @@ class URDFTraits:
                 passive_joints.add(node.joint_name)
 
             for child in node.children:
-                _classify(child, parent_is_wheel=is_drive_wheel, siblings=node.children)
+                _classify(child, parent_is_wheel=is_drive_wheel, siblings=node.children,
+                          parent_joint_type=node.joint_type)
 
         _classify(dag.root_node)
 
@@ -485,7 +491,19 @@ class URDFTraits:
 
         all_links = [l.get('name') for l in dag.xml_root.findall('link')]
 
+        # Classify robot kind: check drive wheels first, then branch topology
+        n_top_branches = len(dag.root_node.children)
+        if len(drive_wheels) >= 2:
+            robot_kind = "wheeled"
+        elif n_top_branches >= 3:
+            robot_kind = "legged"
+        elif n_top_branches >= 1:
+            robot_kind = "arm"
+        else:
+            robot_kind = "unknown"
+
         print(f"  Detected {n} drive wheel(s), {len(passive_contacts)} caster(s), {len(sensors)} sensor(s).")
+        print(f"  robot_kind: {robot_kind}")
         if left_wheel and right_wheel:
             print(f"  wheel_separation={wheel_separation} m  wheel_diameter={wheel_diameter} m")
             print(f"  drive_plugin: {drive_plugin}")
@@ -505,4 +523,5 @@ class URDFTraits:
             drive_plugin=drive_plugin,
             root_link=dag.root_node.link_name,
             passive_joints=passive_joints,
+            robot_kind=robot_kind,
         )

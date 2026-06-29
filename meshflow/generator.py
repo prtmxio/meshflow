@@ -557,7 +557,8 @@ def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = froze
 
 def generate_xacro(output_dir: Path, robot_name: str, macro_based: bool = False,
                    drive_wheel_joints: set = frozenset(),
-                   passive_joints: set = frozenset()) -> None:
+                   passive_joints: set = frozenset(),
+                   robot_kind: str = "wheeled") -> None:
     style = "macro-based" if macro_based else "flat"
     _banner(f"Generating Xacro ({style} style)")
     urdf_path  = output_dir / "models" / "urdf" / f"{robot_name}.urdf"
@@ -570,6 +571,9 @@ def generate_xacro(output_dir: Path, robot_name: str, macro_based: bool = False,
     try:
         content = (_urdf_to_xacro_content(urdf_path) if macro_based
                    else _urdf_to_xacro_flat_content(urdf_path, drive_wheel_joints, passive_joints))
+        if robot_kind != "wheeled" and "</robot>" in content:
+            block = ros2_control_xacro_block(robot_name, urdf_path)
+            content = content.replace("</robot>", block + "\n</robot>", 1)
         xacro_path.write_text(content)
         print(f"  Generated urdf/{robot_name}.urdf.xacro  ({len(content.splitlines())} lines)  [{style}]")
     except Exception as exc:
@@ -644,7 +648,6 @@ def _write_lidar_plugin(L: list, node, config: dict) -> None:
     L.append(f'  <gazebo reference="{link}">')
     L.append('    <mu1>0.2</mu1>')
     L.append('    <mu2>0.2</mu2>')
-    L.append('    <material>Gazebo/Purple</material>')
     L.append('    <sensor name="lidar_sensor" type="ray">')
     L.append('      <always_on>true</always_on>')
     L.append('      <visualize>false</visualize>')
@@ -669,9 +672,9 @@ def _write_lidar_plugin(L: list, node, config: dict) -> None:
     L.append('          <stddev>0.01</stddev>')
     L.append('        </noise>')
     L.append('      </ray>')
-    L.append(f'      <plugin name="scan" filename="{config["plugin_file"]}">')
+    L.append(f'      <plugin name="scan_{link}" filename="{config["plugin_file"]}">')
     L.append('        <ros>')
-    L.append('          <remapping>~/out:=scan</remapping>')
+    L.append(f'          <remapping>~/out:={link}/scan</remapping>')
     L.append('        </ros>')
     L.append('        <output_type>sensor_msgs/LaserScan</output_type>')
     L.append(f'        <frame_name>{link}</frame_name>')
@@ -698,9 +701,9 @@ def _write_camera_plugin(L: list, node, config: dict) -> None:
     L.append('        </image>')
     L.append('        <clip><near>0.1</near><far>100</far></clip>')
     L.append('      </camera>')
-    L.append(f'      <plugin name="camera" filename="{config["plugin_file"]}">')
+    L.append(f'      <plugin name="camera_{link}" filename="{config["plugin_file"]}">')
     L.append('        <ros>')
-    L.append('          <remapping>~/image_raw:=camera/image_raw</remapping>')
+    L.append(f'          <remapping>~/image_raw:={link}/image_raw</remapping>')
     L.append('        </ros>')
     L.append(f'        <frame_name>{link}</frame_name>')
     L.append('      </plugin>')
@@ -725,9 +728,9 @@ def _write_depth_plugin(L: list, node, config: dict) -> None:
     L.append('        </image>')
     L.append('        <clip><near>0.05</near><far>10</far></clip>')
     L.append('      </camera>')
-    L.append(f'      <plugin name="depth_camera" filename="{config["plugin_file"]}">')
+    L.append(f'      <plugin name="depth_{link}" filename="{config["plugin_file"]}">')
     L.append('        <ros>')
-    L.append('          <remapping>~/image_raw:=depth/image_raw</remapping>')
+    L.append(f'          <remapping>~/image_raw:={link}/depth/image_raw</remapping>')
     L.append('        </ros>')
     L.append(f'        <frame_name>{link}</frame_name>')
     L.append('      </plugin>')
@@ -744,9 +747,9 @@ def _write_imu_plugin(L: list, node, config: dict) -> None:
     L.append('      <always_on>true</always_on>')
     L.append(f'      <update_rate>{d["update_rate"]}</update_rate>')
     L.append('      <imu/>')
-    L.append(f'      <plugin name="imu" filename="{config["plugin_file"]}">')
+    L.append(f'      <plugin name="imu_{link}" filename="{config["plugin_file"]}">')
     L.append('        <ros>')
-    L.append('          <remapping>~/out:=imu</remapping>')
+    L.append(f'          <remapping>~/out:={link}/imu</remapping>')
     L.append('        </ros>')
     L.append(f'        <frame_name>{link}</frame_name>')
     L.append('      </plugin>')
@@ -809,78 +812,94 @@ def generate_gazebo_file(
     w('<robot>')
     w('')
 
-    # ── Drive plugin ──────────────────────────────────────────────────────
-    w('  <!-- ═══════════════════════════════════════════════════')
-    if traits.drive_plugin == "libgazebo_ros_skid_steer_drive.so":
-        w('       SKID STEER DRIVE PLUGIN')
+    # ── Drive / motion plugin ─────────────────────────────────────────────
+    if traits.robot_kind == "wheeled":
+        w('  <!-- ═══════════════════════════════════════════════════')
+        if traits.drive_plugin == "libgazebo_ros_skid_steer_drive.so":
+            w('       SKID STEER DRIVE PLUGIN')
+        else:
+            w('       DIFFERENTIAL DRIVE PLUGIN')
+        w('       /cmd_vel → moves robot   /odom → odometry out')
+        w('       ═══════════════════════════════════════════════════ -->')
+        w('  <gazebo>')
+
+        if traits.drive_plugin == "libgazebo_ros_skid_steer_drive.so" and len(traits.drive_wheels) >= 4:
+            half = len(traits.drive_wheels) // 2
+            right_side = sorted(traits.drive_wheels[:half],  key=lambda n: n.global_T[0, 3], reverse=True)
+            left_side  = sorted(traits.drive_wheels[half:],  key=lambda n: n.global_T[0, 3], reverse=True)
+            lf = left_side[0]
+            lr = left_side[1] if len(left_side) > 1 else left_side[0]
+            rf = right_side[0]
+            rr = right_side[1] if len(right_side) > 1 else right_side[0]
+            w(f'    <plugin name="skid_steer_drive" filename="{traits.drive_plugin}">')
+            w('      <ros>')
+            w('        <!-- empty = global namespace → /cmd_vel /odom -->')
+            w('      </ros>')
+            w(f'      <left_front_joint>{lf.joint_name}</left_front_joint>')
+            w(f'      <right_front_joint>{rf.joint_name}</right_front_joint>')
+            w(f'      <left_rear_joint>{lr.joint_name}</left_rear_joint>')
+            w(f'      <right_rear_joint>{rr.joint_name}</right_rear_joint>')
+            w(f'      <wheel_separation>{sep}</wheel_separation>')
+            w(f'      <wheel_diameter>{dia}</wheel_diameter>')
+            w('      <max_wheel_torque>20</max_wheel_torque>')
+            w('      <max_wheel_acceleration>1.0</max_wheel_acceleration>')
+            w('      <publish_odom>true</publish_odom>')
+            w('      <publish_odom_tf>true</publish_odom_tf>')
+            w('      <odometry_frame>odom</odometry_frame>')
+            w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
+        else:
+            lj_name = lw.joint_name if lw else "left_wheel_joint"
+            rj_name = rw.joint_name if rw else "right_wheel_joint"
+            w(f'    <plugin name="diff_drive" filename="{traits.drive_plugin}">')
+            w('      <ros>')
+            w('        <!-- empty = global namespace → /cmd_vel /odom -->')
+            w('      </ros>')
+            w(f'      <left_joint>{lj_name}</left_joint>')
+            w(f'      <right_joint>{rj_name}</right_joint>')
+            w(f'      <wheel_separation>{sep}</wheel_separation>')
+            w(f'      <wheel_diameter>{dia}</wheel_diameter>')
+            w('      <max_wheel_torque>10</max_wheel_torque>')
+            w('      <max_wheel_acceleration>2.0</max_wheel_acceleration>')
+            w('      <publish_odom>true</publish_odom>')
+            w('      <publish_odom_tf>true</publish_odom_tf>')
+            w('      <publish_wheel_tf>false</publish_wheel_tf>')
+            w('      <odometry_frame>odom</odometry_frame>')
+            w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
+
+        w('    </plugin>')
+        w('  </gazebo>')
+        w('')
+
+        # ── Joint state publisher (wheeled only) ─────────────────────────
+        w('  <!-- ═══════════════════════════════════════════════════')
+        w('       JOINT STATE PUBLISHER')
+        w('       → /joint_states so RSP can broadcast TF for moving joints')
+        w('       ═══════════════════════════════════════════════════ -->')
+        w('  <gazebo>')
+        w('    <plugin name="gazebo_ros_joint_state_publisher"')
+        w('            filename="libgazebo_ros_joint_state_publisher.so">')
+        w('      <update_rate>30</update_rate>')
+        for jname in traits.movable_joint_names:
+            w(f'      <joint_name>{jname}</joint_name>')
+        w('    </plugin>')
+        w('  </gazebo>')
+        w('')
+
     else:
-        w('       DIFFERENTIAL DRIVE PLUGIN')
-    w('       /cmd_vel → moves robot   /odom → odometry out')
-    w('       ═══════════════════════════════════════════════════ -->')
-    w('  <gazebo>')
-
-    if traits.drive_plugin == "libgazebo_ros_skid_steer_drive.so" and len(traits.drive_wheels) >= 4:
-        half = len(traits.drive_wheels) // 2
-        right_side = sorted(traits.drive_wheels[:half],  key=lambda n: n.global_T[0, 3], reverse=True)
-        left_side  = sorted(traits.drive_wheels[half:],  key=lambda n: n.global_T[0, 3], reverse=True)
-        lf = left_side[0]
-        lr = left_side[1] if len(left_side) > 1 else left_side[0]
-        rf = right_side[0]
-        rr = right_side[1] if len(right_side) > 1 else right_side[0]
-        w(f'    <plugin name="skid_steer_drive" filename="{traits.drive_plugin}">')
-        w('      <ros>')
-        w('        <!-- empty = global namespace → /cmd_vel /odom -->')
-        w('      </ros>')
-        w(f'      <left_front_joint>{lf.joint_name}</left_front_joint>')
-        w(f'      <right_front_joint>{rf.joint_name}</right_front_joint>')
-        w(f'      <left_rear_joint>{lr.joint_name}</left_rear_joint>')
-        w(f'      <right_rear_joint>{rr.joint_name}</right_rear_joint>')
-        w(f'      <wheel_separation>{sep}</wheel_separation>')
-        w(f'      <wheel_diameter>{dia}</wheel_diameter>')
-        w('      <max_wheel_torque>20</max_wheel_torque>')
-        w('      <max_wheel_acceleration>1.0</max_wheel_acceleration>')
-        w('      <publish_odom>true</publish_odom>')
-        w('      <publish_odom_tf>true</publish_odom_tf>')
-        w('      <odometry_frame>odom</odometry_frame>')
-        w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
-    else:
-        # diff_drive (2 wheels, or >4 fallback using outer pair)
-        lj_name = lw.joint_name if lw else "left_wheel_joint"
-        rj_name = rw.joint_name if rw else "right_wheel_joint"
-        w(f'    <plugin name="diff_drive" filename="{traits.drive_plugin}">')
-        w('      <ros>')
-        w('        <!-- empty = global namespace → /cmd_vel /odom -->')
-        w('      </ros>')
-        w(f'      <left_joint>{lj_name}</left_joint>')
-        w(f'      <right_joint>{rj_name}</right_joint>')
-        w(f'      <wheel_separation>{sep}</wheel_separation>')
-        w(f'      <wheel_diameter>{dia}</wheel_diameter>')
-        w('      <max_wheel_torque>10</max_wheel_torque>')
-        w('      <max_wheel_acceleration>2.0</max_wheel_acceleration>')
-        w('      <publish_odom>true</publish_odom>')
-        w('      <publish_odom_tf>true</publish_odom_tf>')
-        w('      <publish_wheel_tf>false</publish_wheel_tf>')
-        w('      <odometry_frame>odom</odometry_frame>')
-        w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
-
-    w('    </plugin>')
-    w('  </gazebo>')
-    w('')
-
-    # ── Joint state publisher ────────────────────────────────────────────
-    w('  <!-- ═══════════════════════════════════════════════════')
-    w('       JOINT STATE PUBLISHER')
-    w('       → /joint_states so RSP can broadcast TF for moving joints')
-    w('       ═══════════════════════════════════════════════════ -->')
-    w('  <gazebo>')
-    w('    <plugin name="gazebo_ros_joint_state_publisher"')
-    w('            filename="libgazebo_ros_joint_state_publisher.so">')
-    w('      <update_rate>30</update_rate>')
-    for jname in traits.movable_joint_names:
-        w(f'      <joint_name>{jname}</joint_name>')
-    w('    </plugin>')
-    w('  </gazebo>')
-    w('')
+        # ── ros2_control (legged / arm / unknown) ─────────────────────────
+        w('  <!-- ═══════════════════════════════════════════════════')
+        w(f'       ROS2 CONTROL PLUGIN  [{traits.robot_kind}]')
+        w('       Control joints via /joint_trajectory_controller')
+        w('       Load with controller spawners in gazebo.launch.py')
+        w('       ═══════════════════════════════════════════════════ -->')
+        w('  <gazebo>')
+        w('    <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so">')
+        w('      <robot_sim_type>gazebo_ros2_control/GazeboSystem</robot_sim_type>')
+        w('    </plugin>')
+        w('  </gazebo>')
+        w('')
+        w('  <!-- joint_state_broadcaster (from ros2_control) publishes /joint_states -->')
+        w('')
 
     # ── Sensor plugin blocks ─────────────────────────────────────────────
     if traits.sensors:
@@ -979,6 +998,78 @@ def generate_gazebo_file(
 
     out_path.write_text('\n'.join(L) + '\n')
     print(f"  Generated gazebo/{robot_name}.gazebo")
-    print(f"    wheel_separation={sep}m  wheel_diameter={dia}m")
+    if traits.robot_kind == "wheeled":
+        print(f"    wheel_separation={sep}m  wheel_diameter={dia}m")
     print(f"    sensor joints: {[s.joint_name for s in traits.sensors if s.joint_type=='revolute']}")
     print(f"  Gazebo plugins activate after: colcon build && source install/setup.zsh")
+
+    if traits.robot_kind != "wheeled":
+        _generate_controllers_yaml(output_dir, robot_name)
+
+
+def _movable_joints_from_urdf(urdf_path: Path) -> list[str]:
+    try:
+        root = ET.parse(urdf_path).getroot()
+        return [
+            j.get('name') for j in root.findall('joint')
+            if j.get('type') not in ('fixed', 'floating', 'planar', None)
+        ]
+    except Exception:
+        return []
+
+
+def _generate_controllers_yaml(output_dir: Path, robot_name: str) -> None:
+    urdf_path = output_dir / "models" / "urdf" / f"{robot_name}.urdf"
+    joints = _movable_joints_from_urdf(urdf_path)
+
+    lines = [
+        "controller_manager:",
+        "  ros__parameters:",
+        "    update_rate: 100",
+        "",
+        "    joint_state_broadcaster:",
+        "      type: joint_state_broadcaster/JointStateBroadcaster",
+        "",
+        "    joint_trajectory_controller:",
+        "      type: joint_trajectory_controller/JointTrajectoryController",
+        "",
+        "joint_trajectory_controller:",
+        "  ros__parameters:",
+        "    joints:",
+    ]
+    for jname in joints:
+        lines.append(f"      - {jname}")
+    lines += [
+        "    command_interfaces:",
+        "      - position",
+        "    state_interfaces:",
+        "      - position",
+        "      - velocity",
+    ]
+
+    config_dir = output_dir / "config"
+    config_dir.mkdir(exist_ok=True)
+    (config_dir / "controllers.yaml").write_text('\n'.join(lines) + '\n')
+    print(f"  Generated config/controllers.yaml ({len(joints)} joints)")
+
+
+def ros2_control_xacro_block(robot_name: str, urdf_path: Path) -> str:
+    """Return the <ros2_control> XML block to be inserted in the xacro for non-wheeled robots."""
+    joints = _movable_joints_from_urdf(urdf_path)
+    lines = [
+        "",
+        f'  <ros2_control name="{robot_name}" type="system">',
+        "    <hardware>",
+        "      <plugin>gazebo_ros2_control/GazeboSystem</plugin>",
+        "    </hardware>",
+    ]
+    for jname in joints:
+        lines += [
+            f'    <joint name="{jname}">',
+            '      <command_interface name="position"/>',
+            '      <state_interface name="position"/>',
+            '      <state_interface name="velocity"/>',
+            "    </joint>",
+        ]
+    lines.append("  </ros2_control>")
+    return "\n".join(lines)

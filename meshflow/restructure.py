@@ -9,6 +9,7 @@ from .templates import (
     CMAKE_TEMPLATE,
     DISPLAY_LAUNCH_TEMPLATE,
     GAZEBO_LAUNCH_TEMPLATE,
+    GAZEBO_LAUNCH_NONWHEELED_TEMPLATE,
     PACKAGE_XML_TEMPLATE,
     RVIZ_TEMPLATE,
 )
@@ -65,6 +66,7 @@ def restructure_for_ros2(staging_dir: Path, output_dir: Path, robot_name: str, p
         )
         urdf_path.write_text(content)
         print(f"  Patched mesh URIs → package://{pkg_name}/models/meshes/<name>.stl")
+        _patch_joint_link_collisions(urdf_path)
 
     # 5. Inherit saved RViz config if present next to the script, else generate default
     source_rviz = Path.cwd() / "robot.rviz"
@@ -80,9 +82,9 @@ def restructure_for_ros2(staging_dir: Path, output_dir: Path, robot_name: str, p
     _write_package_xml(output_dir, pkg_name)
     _write_cmake(output_dir, pkg_name)
 
-    # 7. Generate launch files
+    # 7. Generate launch files (gazebo.launch.py rewritten later with correct robot_kind)
     _write_launch_file(launch_dir, robot_name, pkg_name)
-    write_gazebo_launch(launch_dir, robot_name, pkg_name)
+    write_gazebo_launch(launch_dir, robot_name, pkg_name, robot_kind="wheeled")
 
     # 8. Annihilate the sandbox
     shutil.rmtree(staging_dir, ignore_errors=True)
@@ -99,6 +101,24 @@ def _write_cmake(output_dir: Path, pkg_name: str) -> None:
     content = CMAKE_TEMPLATE.replace('PKG_NAME', pkg_name)
     (output_dir / "CMakeLists.txt").write_text(content)
     print("  Generated CMakeLists.txt")
+
+
+def _patch_joint_link_collisions(urdf_path: Path) -> None:
+    content = urdf_path.read_text()
+    root_el = ET.fromstring(content)
+    link_names = {l.get('name') for l in root_el.findall('link')}
+    collisions = [j.get('name') for j in root_el.findall('joint')
+                  if j.get('name') in link_names]
+    for name in collisions:
+        print(f"  [WARN] Joint/link name collision: renaming joint '{name}' → '{name}_joint'")
+        content = re.sub(
+            r'(<joint\s[^>]*?\bname=")' + re.escape(name) + r'"',
+            r'\g<1>' + name + r'_joint"',
+            content,
+            count=1,
+        )
+    if collisions:
+        urdf_path.write_text(content)
 
 
 def _urdf_root_link(urdf_path: Path) -> str:
@@ -128,14 +148,17 @@ def _write_launch_file(launch_dir: Path, robot_name: str, pkg_name: str) -> None
     print("  Generated launch/display.launch.py")
 
 
-def write_gazebo_launch(launch_dir: Path, robot_name: str, pkg_name: str) -> None:
+def write_gazebo_launch(launch_dir: Path, robot_name: str, pkg_name: str,
+                        robot_kind: str = "wheeled") -> None:
+    template = (GAZEBO_LAUNCH_TEMPLATE if robot_kind == "wheeled"
+                else GAZEBO_LAUNCH_NONWHEELED_TEMPLATE)
     content = (
-        GAZEBO_LAUNCH_TEMPLATE
+        template
         .replace('ROBOT_NAME', robot_name)
         .replace('PKG_NAME',   pkg_name)
     )
     (launch_dir / 'gazebo.launch.py').write_text(content)
-    print("  Generated launch/gazebo.launch.py")
+    print(f"  Generated launch/gazebo.launch.py  [{robot_kind}]")
 
 
 def validate_urdf(output_dir: Path, robot_name: str) -> None:

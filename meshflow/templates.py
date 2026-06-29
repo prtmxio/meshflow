@@ -197,6 +197,130 @@ def generate_launch_description():
     ])
 """
 
+GAZEBO_LAUNCH_NONWHEELED_TEMPLATE = """import os
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import (
+    ExecuteProcess, IncludeLaunchDescription,
+    SetEnvironmentVariable, TimerAction
+)
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
+import xacro
+
+def generate_launch_description():
+    pkg_name   = 'PKG_NAME'
+    pkg_path   = get_package_share_directory(pkg_name)
+    gazebo_pkg = get_package_share_directory('gazebo_ros')
+
+    xacro_file = os.path.join(pkg_path, 'models', 'urdf', 'ROBOT_NAME.urdf.xacro')
+    urdf_str   = xacro.process_file(xacro_file).toxml()
+    urdf_str   = urdf_str.replace(
+        f'package://{pkg_name}/',
+        f'file://{pkg_path}/'
+    )
+    robot_description = {'robot_description': urdf_str}
+
+    disable_online_db = SetEnvironmentVariable(
+        name='GAZEBO_MODEL_DATABASE_URI', value=''
+    )
+    system_models  = '/usr/share/gazebo-11/models'
+    existing       = os.environ.get('GAZEBO_MODEL_PATH', '')
+    fix_model_path = SetEnvironmentVariable(
+        name='GAZEBO_MODEL_PATH',
+        value=system_models + (':' + existing if existing else '')
+    )
+
+    gzserver = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(gazebo_pkg, 'launch', 'gazebo.launch.py')
+        ),
+        launch_arguments={'verbose': 'true', 'gui': 'false'}.items(),
+    )
+
+    gzclient = TimerAction(
+        period=4.0,
+        actions=[ExecuteProcess(cmd=['gzclient'], output='screen')]
+    )
+
+    rsp = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        parameters=[robot_description, {'use_sim_time': True}],
+        output='screen',
+    )
+
+    spawn = TimerAction(
+        period=12.0,
+        actions=[
+            Node(
+                package='gazebo_ros',
+                executable='spawn_entity.py',
+                arguments=[
+                    '-topic', 'robot_description',
+                    '-entity', 'ROBOT_NAME',
+                    '-x', '0', '-y', '0', '-z', '0.05',
+                ],
+                output='screen',
+            )
+        ]
+    )
+
+    # Load ros2_control controllers after spawn
+    load_joint_state_broadcaster = TimerAction(
+        period=15.0,
+        actions=[
+            Node(
+                package='controller_manager',
+                executable='spawner',
+                arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager'],
+                output='screen',
+            )
+        ]
+    )
+
+    load_joint_trajectory_controller = TimerAction(
+        period=17.0,
+        actions=[
+            Node(
+                package='controller_manager',
+                executable='spawner',
+                arguments=[
+                    'joint_trajectory_controller',
+                    '--controller-manager', '/controller_manager',
+                    '--param-file', os.path.join(pkg_path, 'config', 'controllers.yaml'),
+                ],
+                output='screen',
+            )
+        ]
+    )
+
+    rviz = TimerAction(
+        period=19.0,
+        actions=[
+            Node(
+                package='rviz2',
+                executable='rviz2',
+                arguments=['-d', os.path.join(pkg_path, 'rviz', 'robot.rviz')],
+                parameters=[{'use_sim_time': True}],
+                output='screen',
+            )
+        ]
+    )
+
+    return LaunchDescription([
+        disable_online_db,
+        fix_model_path,
+        gzserver,
+        rsp,
+        gzclient,
+        spawn,
+        load_joint_state_broadcaster,
+        load_joint_trajectory_controller,
+        rviz,
+    ])
+"""
+
 PACKAGE_XML_TEMPLATE = """<?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd"
             schematypens="http://www.w3.org/2001/XMLSchema"?>
