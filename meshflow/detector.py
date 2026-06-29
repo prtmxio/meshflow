@@ -383,40 +383,58 @@ class URDFTraits:
 
         Y_HAT = np.array([0.0, 1.0, 0.0])
 
-        def _classify(node: KinematicNode) -> None:
+        def _classify(node: KinematicNode, parent_is_wheel: bool = False,
+                      siblings: list | None = None) -> None:
             if node.joint_type == 'root':
                 for child in node.children:
-                    _classify(child)
+                    _classify(child, siblings=node.children)
                 return
 
             jt     = node.joint_type
             z_min  = node.z_min
             y_dot  = abs(float(np.dot(node.axis_world, Y_HAT)))
 
+            is_drive_wheel = (jt == 'continuous' and y_dot > 0.85 and z_min < 0.20)
+
+            def _has_colocated_wheel_sibling() -> bool:
+                if not siblings:
+                    return False
+                pos = node.global_T[:3, 3]
+                return any(
+                    s is not node
+                    and s.joint_type == 'continuous'
+                    and abs(float(np.dot(s.axis_world, Y_HAT))) > 0.85
+                    and float(np.linalg.norm(s.global_T[:3, 3] - pos)) < 0.015
+                    for s in siblings
+                )
+
             # ── Drive wheel ────────────────────────────────────────────────
-            if jt == 'continuous' and y_dot > 0.85 and z_min < 0.20:
+            if is_drive_wheel:
                 drive_wheels.append(node)
 
             # ── Passive contact (caster) ───────────────────────────────────
-            elif jt == 'fixed' and node.link_name != root_link and z_min < 0.01:
+            elif jt == 'fixed' and not parent_is_wheel and node.link_name != root_link and z_min < 0.01:
                 passive_contacts.append(node)
 
             # ── Rotating sensor (revolute lidar) ──────────────────────────
-            elif jt == 'revolute' and z_min > 0.05:
+            elif jt == 'revolute' and y_dot < 0.5:
                 sensors.append(node)
 
             # ── Fixed sensor (camera / IMU / depth / fixed lidar) ─────────
-            elif (jt == 'fixed' and z_min > 0.05
-                  and node.link_name != root_link
+            # parent_is_wheel: excludes fixed children of drive wheels (sample_robo-style hubs)
+            # _has_colocated_wheel_sibling: excludes fixed nodes co-located with a wheel sibling
+            #   (sam-style hubs where both hub and wheel are direct children of base_link)
+            elif (jt == 'fixed' and not parent_is_wheel and not _has_colocated_wheel_sibling()
+                  and z_min > 0.05 and node.link_name != root_link
                   and _is_leaf_or_fixed_children(node)):
                 sensors.append(node)
 
             else:
-                if jt not in ('fixed',):  # fixed structural links are expected/silent
+                if jt not in ('fixed',):
                     print(f"  [INFO] Unclassified node: {node.link_name} (type={jt}, z_min={z_min:.3f})")
 
             for child in node.children:
-                _classify(child)
+                _classify(child, parent_is_wheel=is_drive_wheel, siblings=node.children)
 
         _classify(dag.root_node)
 
