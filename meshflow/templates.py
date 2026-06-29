@@ -157,7 +157,7 @@ def generate_launch_description():
 
     # ── Spawn robot (delayed — gzserver needs ~3s with model DB disabled) ──
     spawn = TimerAction(
-        period=6.0,
+        period=12.0,
         actions=[
             Node(
                 package='gazebo_ros',
@@ -174,7 +174,7 @@ def generate_launch_description():
 
     # ── RViz (use_sim_time=True so TF timestamps match Gazebo sim clock) ───
     rviz = TimerAction(
-        period=7.0,
+        period=13.0,
         actions=[
             Node(
                 package='rviz2',

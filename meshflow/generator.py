@@ -50,6 +50,51 @@ def _inertia_attrs(inertial: ET.Element) -> dict:
     return {k: el.get(k, "0") for k in ("ixx","ixy","ixz","iyy","iyz","izz")}
 
 
+def _extract_link_dominant_colors(urdf_path: Path) -> dict:
+    """Return {link_name: (R, G, B, A)} with the most perceptually distinctive visual color per link.
+
+    Picks the highest-saturation color whose luminance > 0.35 (avoids very dark parts
+    swamping the result); falls back to the first valid color if none qualify.
+
+    Needed because Gazebo Classic does not render URDF <color rgba> for STL mesh visuals.
+    Explicit SDF ambient/diffuse in <gazebo reference> blocks are the only reliable way
+    to apply per-link colors in Gazebo Classic.
+    """
+    tree = ET.parse(urdf_path)
+    root = tree.getroot()
+    colors: dict = {}
+    for link in root.findall("link"):
+        lname = link.get("name")
+        first_valid: tuple | None = None
+        best: tuple | None = None
+        best_sat = -1.0
+        for visual in link.findall("visual"):
+            mat = visual.find("material")
+            if mat is None:
+                continue
+            clr = mat.find("color")
+            if clr is None:
+                continue
+            parts = clr.get("rgba", "").split()
+            if len(parts) != 4:
+                continue
+            try:
+                r, g, b, a = map(float, parts)
+            except ValueError:
+                continue
+            if first_valid is None:
+                first_valid = (r, g, b, a)
+            luminance = (r + g + b) / 3.0
+            saturation = max(r, g, b) - min(r, g, b)
+            if luminance > 0.35 and saturation > best_sat:
+                best_sat = saturation
+                best = (r, g, b, a)
+        chosen = best if best is not None else first_valid
+        if chosen is not None:
+            colors[lname] = chosen
+    return colors
+
+
 def _urdf_to_xacro_content(urdf_path: Path) -> str:
     """
     Convert a flat onshape-to-robot URDF into clean xacro.
@@ -372,7 +417,8 @@ def _urdf_to_xacro_content(urdf_path: Path) -> str:
     return "\n".join(L) + "\n"
 
 
-def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = frozenset()) -> str:
+def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = frozenset(),
+                                passive_joints: set = frozenset()) -> str:
     """
     Flat (tortoisebot) style xacro:
       - No properties, no macros — every link/joint written explicitly
@@ -416,10 +462,10 @@ def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = froze
         return f"package://{pkg}/models/meshes/{name}"
 
     for link in root.findall("link"):
-        lname     = link.get("name")
-        inertial  = link.find("inertial")
-        visual    = link.find("visual")
-        collision = link.find("collision")
+        lname    = link.get("name")
+        inertial = link.find("inertial")
+        visuals   = link.findall("visual")
+        collisions = link.findall("collision")
 
         w(f'  <!-- ── {lname} ── -->')
         w(f'  <link name="{lname}">')
@@ -437,7 +483,7 @@ def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = froze
             w(f'               iyy="{in_i["iyy"]}" iyz="{in_i["iyz"]}" izz="{in_i["izz"]}"/>')
             w('    </inertial>')
 
-        if visual is not None:
+        for visual in visuals:
             vis_o = visual.find("origin")
             mesh  = visual.find("geometry/mesh")
             mat   = visual.find("material")
@@ -455,7 +501,7 @@ def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = froze
                 w(f'      </material>')
             w('    </visual>')
 
-        if collision is not None:
+        for collision in collisions:
             col_o = collision.find("origin")
             mesh  = collision.find("geometry/mesh")
             w('    <collision>')
@@ -479,8 +525,13 @@ def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = froze
         axis   = joint.find("axis")
         limit  = joint.find("limit")
 
-        # Onshape exports drive wheels as revolute ±π; continuous is correct for Gazebo
-        emit_type = 'continuous' if (jname in drive_wheel_joints and jtype == 'revolute') else jtype
+        # Passive rollers → fixed (no physics sim needed; drive wheels → continuous)
+        if jname in passive_joints:
+            emit_type = 'fixed'
+        elif jname in drive_wheel_joints and jtype == 'revolute':
+            emit_type = 'continuous'
+        else:
+            emit_type = jtype
         w(f'  <!-- ── {jname} ({emit_type}) ── -->')
         w(f'  <joint name="{jname}" type="{emit_type}">')
         if origin is not None:
@@ -505,7 +556,8 @@ def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = froze
 
 
 def generate_xacro(output_dir: Path, robot_name: str, macro_based: bool = False,
-                   drive_wheel_joints: set = frozenset()) -> None:
+                   drive_wheel_joints: set = frozenset(),
+                   passive_joints: set = frozenset()) -> None:
     style = "macro-based" if macro_based else "flat"
     _banner(f"Generating Xacro ({style} style)")
     urdf_path  = output_dir / "models" / "urdf" / f"{robot_name}.urdf"
@@ -517,7 +569,7 @@ def generate_xacro(output_dir: Path, robot_name: str, macro_based: bool = False,
 
     try:
         content = (_urdf_to_xacro_content(urdf_path) if macro_based
-                   else _urdf_to_xacro_flat_content(urdf_path, drive_wheel_joints))
+                   else _urdf_to_xacro_flat_content(urdf_path, drive_wheel_joints, passive_joints))
         xacro_path.write_text(content)
         print(f"  Generated urdf/{robot_name}.urdf.xacro  ({len(content.splitlines())} lines)  [{style}]")
     except Exception as exc:
@@ -858,32 +910,67 @@ def generate_gazebo_file(
     w('  <!-- ═══════════════════════════════════════════════════')
     w('       FRICTION + MATERIAL per link')
     w('       ═══════════════════════════════════════════════════ -->')
+
+    # Gazebo Classic does not render URDF <color rgba> for STL mesh visuals.
+    # Extract per-link dominant colors from URDF and emit explicit SDF material.
+    urdf_path = output_dir / "models" / "urdf" / f"{robot_name}.urdf"
+    link_colors: dict = _extract_link_dominant_colors(urdf_path) if urdf_path.exists() else {}
+
+    def _sdf_color(lname: str) -> None:
+        if lname not in link_colors:
+            return
+        r, g, b, a = link_colors[lname]
+        w('    <material>')
+        w(f'      <ambient>{r:.4f} {g:.4f} {b:.4f} 1</ambient>')
+        w(f'      <diffuse>{r:.4f} {g:.4f} {b:.4f} {a:.4f}</diffuse>')
+        w('      <specular>0.1 0.1 0.1 1</specular>')
+        w('      <emissive>0 0 0 0</emissive>')
+        w('    </material>')
+
     w(f'  <gazebo reference="{traits.root_link}">')
     w('    <mu1>0.2</mu1>')
     w('    <mu2>0.2</mu2>')
     w('    <gravity>true</gravity>')
-    w('    <material>Gazebo/Turquoise</material>')
+    _sdf_color(traits.root_link)
     w('  </gazebo>')
     w('')
 
+    handled_links: set = {traits.root_link}
+
     for wheel_node in traits.drive_wheels:
+        handled_links.add(wheel_node.link_name)
         w(f'  <gazebo reference="{wheel_node.link_name}">')
         w('    <mu1>1.0</mu1>')
         w('    <mu2>1.0</mu2>')
         w('    <kp>500000.0</kp>')
         w('    <kd>10.0</kd>')
         w('    <minDepth>0.001</minDepth>')
-        w('    <material>Gazebo/DarkGrey</material>')
+        _sdf_color(wheel_node.link_name)
         w('  </gazebo>')
         w('')
 
     for caster_node in traits.passive_contacts:
+        handled_links.add(caster_node.link_name)
         w(f'  <gazebo reference="{caster_node.link_name}">')
         w('    <mu1>0.0</mu1>')
         w('    <mu2>0.0</mu2>')
         w('    <kp>1000000.0</kp>')
         w('    <kd>100.0</kd>')
-        w('    <material>Gazebo/Grey</material>')
+        _sdf_color(caster_node.link_name)
+        w('  </gazebo>')
+        w('')
+
+    # Color-only blocks for all remaining links (kicker, passive rollers, etc.)
+    for lname, (r, g, b, a) in link_colors.items():
+        if lname in handled_links:
+            continue
+        w(f'  <gazebo reference="{lname}">')
+        w('    <material>')
+        w(f'      <ambient>{r:.4f} {g:.4f} {b:.4f} 1</ambient>')
+        w(f'      <diffuse>{r:.4f} {g:.4f} {b:.4f} {a:.4f}</diffuse>')
+        w('      <specular>0.1 0.1 0.1 1</specular>')
+        w('      <emissive>0 0 0 0</emissive>')
+        w('    </material>')
         w('  </gazebo>')
         w('')
 

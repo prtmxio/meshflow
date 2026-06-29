@@ -367,6 +367,7 @@ class URDFTraits:
     wheel_diameter:   float
     drive_plugin:     str    # libgazebo_ros_diff_drive.so or ..._skid_steer_drive.so
     root_link:        str
+    passive_joints:   set    # joint names to emit as fixed in xacro (passive rollers on omni wheels)
 
     @property
     def movable_joint_names(self) -> list[str]:
@@ -380,6 +381,7 @@ class URDFTraits:
         drive_wheels:     list[KinematicNode] = []
         passive_contacts: list[KinematicNode] = []
         sensors:          list[KinematicNode] = []
+        passive_joints:   set[str]            = set()
         root_link = dag.root_node.link_name
 
         Y_HAT = np.array([0.0, 1.0, 0.0])
@@ -396,7 +398,10 @@ class URDFTraits:
             y_dot  = abs(float(np.dot(node.axis_world, Y_HAT)))
             z_dot  = abs(float(np.dot(node.axis_world, np.array([0.0, 0.0, 1.0]))))
 
-            is_drive_wheel = (jt in ('continuous', 'revolute') and z_dot < 0.5 and z_min < 0.20)
+            is_drive_wheel = (not parent_is_wheel
+                              and jt in ('continuous', 'revolute')
+                              and z_dot < 0.5
+                              and z_min < 0.20)
 
             def _has_colocated_wheel_sibling() -> bool:
                 if not siblings:
@@ -419,7 +424,7 @@ class URDFTraits:
                 passive_contacts.append(node)
 
             # ── Rotating sensor (revolute lidar) ──────────────────────────
-            elif jt == 'revolute' and y_dot < 0.5:
+            elif jt == 'revolute' and y_dot < 0.5 and not parent_is_wheel:
                 sensors.append(node)
 
             # ── Fixed sensor (camera / IMU / depth / fixed lidar) ─────────
@@ -432,8 +437,13 @@ class URDFTraits:
                 sensors.append(node)
 
             else:
-                if jt not in ('fixed',):
+                if jt not in ('fixed',) and not parent_is_wheel:
                     print(f"  [INFO] Unclassified node: {node.link_name} (type={jt}, z_min={z_min:.3f})")
+
+            # Any non-drive-wheel, non-fixed joint has no Gazebo controller → emit as
+            # fixed in xacro so RSP can publish static TF without joint_states input.
+            if jt not in ('fixed', 'root') and not is_drive_wheel:
+                passive_joints.add(node.joint_name)
 
             for child in node.children:
                 _classify(child, parent_is_wheel=is_drive_wheel, siblings=node.children)
@@ -470,6 +480,8 @@ class URDFTraits:
             drive_plugin = "libgazebo_ros_diff_drive.so"
             if n < 2:
                 print(f"  [WARN] Only {n} drive wheel(s) detected — plugin params may be incomplete.")
+            elif n == 3:
+                print(f"  [INFO] 3-wheel omni robot: diff_drive uses outer wheel pair (wheel 3 ignored).")
 
         all_links = [l.get('name') for l in dag.xml_root.findall('link')]
 
@@ -477,6 +489,9 @@ class URDFTraits:
         if left_wheel and right_wheel:
             print(f"  wheel_separation={wheel_separation} m  wheel_diameter={wheel_diameter} m")
             print(f"  drive_plugin: {drive_plugin}")
+
+        if passive_joints:
+            print(f"  [INFO] {len(passive_joints)} passive roller joint(s) will be fixed in xacro (Gazebo simulation).")
 
         return cls(
             drive_wheels=drive_wheels,
@@ -489,4 +504,5 @@ class URDFTraits:
             wheel_diameter=wheel_diameter,
             drive_plugin=drive_plugin,
             root_link=dag.root_node.link_name,
+            passive_joints=passive_joints,
         )

@@ -155,7 +155,8 @@ def main() -> None:
             drive_wheel_joints = {n.joint_name for n in traits.drive_wheels}
 
         generate_xacro(output_dir, safe_name, macro_based=macro_based,
-                       drive_wheel_joints=drive_wheel_joints)
+                       drive_wheel_joints=drive_wheel_joints,
+                       passive_joints=traits.passive_joints if traits else frozenset())
         validate_xacro(output_dir, safe_name)
 
         if traits is not None:
