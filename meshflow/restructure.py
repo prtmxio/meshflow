@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from .templates import (
     CMAKE_TEMPLATE,
@@ -71,8 +72,9 @@ def restructure_for_ros2(staging_dir: Path, output_dir: Path, robot_name: str, p
         shutil.copy(str(source_rviz), str(rviz_dir / "robot.rviz"))
         print("  Inherited robot.rviz from working directory.")
     else:
-        _write_default_rviz(rviz_dir / "robot.rviz")
-        print("  Generated default robot.rviz (RobotModel + TF + Grid, Fixed Frame = base_link).")
+        fixed_frame = _urdf_root_link(urdf_dir / f"{robot_name}.urdf")
+        _write_default_rviz(rviz_dir / "robot.rviz", fixed_frame)
+        print(f"  Generated default robot.rviz (RobotModel + TF + Grid, Fixed Frame = {fixed_frame}).")
 
     # 6. Generate ROS 2 package boilerplate
     _write_package_xml(output_dir, pkg_name)
@@ -99,8 +101,25 @@ def _write_cmake(output_dir: Path, pkg_name: str) -> None:
     print("  Generated CMakeLists.txt")
 
 
-def _write_default_rviz(dest: Path) -> None:
-    dest.write_text(RVIZ_TEMPLATE)
+def _urdf_root_link(urdf_path: Path) -> str:
+    try:
+        root_el = ET.parse(urdf_path).getroot()
+        all_links   = {l.get('name') for l in root_el.findall('link')}
+        child_links = set()
+        for j in root_el.findall('joint'):
+            c = j.find('child')
+            if c is not None:
+                child_links.add(c.get('link'))
+        candidates = sorted(all_links - child_links)
+        if candidates:
+            return candidates[0]
+    except Exception:
+        pass
+    return "base_link"
+
+
+def _write_default_rviz(dest: Path, fixed_frame: str = "base_link") -> None:
+    dest.write_text(RVIZ_TEMPLATE.replace("Fixed Frame: base_link", f"Fixed Frame: {fixed_frame}"))
 
 
 def _write_launch_file(launch_dir: Path, robot_name: str, pkg_name: str) -> None:

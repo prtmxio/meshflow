@@ -366,6 +366,7 @@ class URDFTraits:
     wheel_separation: float
     wheel_diameter:   float
     drive_plugin:     str    # libgazebo_ros_diff_drive.so or ..._skid_steer_drive.so
+    root_link:        str
 
     @property
     def movable_joint_names(self) -> list[str]:
@@ -393,8 +394,9 @@ class URDFTraits:
             jt     = node.joint_type
             z_min  = node.z_min
             y_dot  = abs(float(np.dot(node.axis_world, Y_HAT)))
+            z_dot  = abs(float(np.dot(node.axis_world, np.array([0.0, 0.0, 1.0]))))
 
-            is_drive_wheel = (jt == 'continuous' and y_dot > 0.85 and z_min < 0.20)
+            is_drive_wheel = (jt in ('continuous', 'revolute') and z_dot < 0.5 and z_min < 0.20)
 
             def _has_colocated_wheel_sibling() -> bool:
                 if not siblings:
@@ -451,12 +453,11 @@ class URDFTraits:
         left_wheel  = drive_wheels[-1] if drive_wheels else None
         right_wheel = drive_wheels[0]  if drive_wheels else None
 
-        wheel_separation = (
-            abs(left_wheel.y_position - right_wheel.y_position)
-            if left_wheel is not None and right_wheel is not None
-            else 0.0
-        )
-        wheel_separation = round(wheel_separation, 4)
+        if left_wheel is not None and right_wheel is not None:
+            pos_diff = left_wheel.global_T[:3, 3] - right_wheel.global_T[:3, 3]
+            wheel_separation = round(float(np.linalg.norm(pos_diff)), 4)
+        else:
+            wheel_separation = 0.0
         wheel_diameter   = _compute_wheel_diameter(left_wheel)
 
         n = len(drive_wheels)
@@ -487,4 +488,5 @@ class URDFTraits:
             wheel_separation=wheel_separation,
             wheel_diameter=wheel_diameter,
             drive_plugin=drive_plugin,
+            root_link=dag.root_node.link_name,
         )

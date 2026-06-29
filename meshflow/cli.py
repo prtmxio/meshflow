@@ -143,15 +143,22 @@ def main() -> None:
 
         restructure_for_ros2(staging_dir, output_dir, safe_name, pkg_name)
         validate_urdf(output_dir, safe_name)
-        generate_xacro(output_dir, safe_name, macro_based=macro_based)
-        validate_xacro(output_dir, safe_name)
 
-        # Detect traits and generate Gazebo plugins
+        # Detect traits first so xacro generation can emit correct joint types
         urdf_path = output_dir / "models" / "urdf" / f"{safe_name}.urdf"
+        traits = None
+        drive_wheel_joints: set = frozenset()
         if urdf_path.exists():
             mesh_dir = output_dir / "models" / "meshes"
             dag    = KinematicDAG(urdf_path, mesh_dir=mesh_dir)
             traits = URDFTraits.from_dag(dag)
+            drive_wheel_joints = {n.joint_name for n in traits.drive_wheels}
+
+        generate_xacro(output_dir, safe_name, macro_based=macro_based,
+                       drive_wheel_joints=drive_wheel_joints)
+        validate_xacro(output_dir, safe_name)
+
+        if traits is not None:
             generate_gazebo_file(output_dir, safe_name, pkg_name, traits)
         else:
             print("  [WARN] URDF not found — skipping Gazebo plugin generation.")

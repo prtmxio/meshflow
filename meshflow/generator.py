@@ -372,7 +372,7 @@ def _urdf_to_xacro_content(urdf_path: Path) -> str:
     return "\n".join(L) + "\n"
 
 
-def _urdf_to_xacro_flat_content(urdf_path: Path) -> str:
+def _urdf_to_xacro_flat_content(urdf_path: Path, drive_wheel_joints: set = frozenset()) -> str:
     """
     Flat (tortoisebot) style xacro:
       - No properties, no macros — every link/joint written explicitly
@@ -479,8 +479,10 @@ def _urdf_to_xacro_flat_content(urdf_path: Path) -> str:
         axis   = joint.find("axis")
         limit  = joint.find("limit")
 
-        w(f'  <!-- ── {jname} ({jtype}) ── -->')
-        w(f'  <joint name="{jname}" type="{jtype}">')
+        # Onshape exports drive wheels as revolute ±π; continuous is correct for Gazebo
+        emit_type = 'continuous' if (jname in drive_wheel_joints and jtype == 'revolute') else jtype
+        w(f'  <!-- ── {jname} ({emit_type}) ── -->')
+        w(f'  <joint name="{jname}" type="{emit_type}">')
         if origin is not None:
             w(f'    <origin xyz="{origin.get("xyz","0 0 0")}" rpy="{origin.get("rpy","0 0 0")}"/>')
         if parent is not None:
@@ -489,7 +491,7 @@ def _urdf_to_xacro_flat_content(urdf_path: Path) -> str:
             w(f'    <child link="{child.get("link")}"/>')
         if axis is not None:
             w(f'    <axis xyz="{axis.get("xyz")}"/>')
-        if limit is not None and jtype in ("revolute", "prismatic"):
+        if limit is not None and emit_type in ("revolute", "prismatic"):
             parts = " ".join(
                 f'{k}="{limit.get(k)}"' for k in ("effort","velocity","lower","upper")
                 if limit.get(k) is not None
@@ -502,7 +504,8 @@ def _urdf_to_xacro_flat_content(urdf_path: Path) -> str:
     return "\n".join(L) + "\n"
 
 
-def generate_xacro(output_dir: Path, robot_name: str, macro_based: bool = False) -> None:
+def generate_xacro(output_dir: Path, robot_name: str, macro_based: bool = False,
+                   drive_wheel_joints: set = frozenset()) -> None:
     style = "macro-based" if macro_based else "flat"
     _banner(f"Generating Xacro ({style} style)")
     urdf_path  = output_dir / "models" / "urdf" / f"{robot_name}.urdf"
@@ -514,7 +517,7 @@ def generate_xacro(output_dir: Path, robot_name: str, macro_based: bool = False)
 
     try:
         content = (_urdf_to_xacro_content(urdf_path) if macro_based
-                   else _urdf_to_xacro_flat_content(urdf_path))
+                   else _urdf_to_xacro_flat_content(urdf_path, drive_wheel_joints))
         xacro_path.write_text(content)
         print(f"  Generated urdf/{robot_name}.urdf.xacro  ({len(content.splitlines())} lines)  [{style}]")
     except Exception as exc:
@@ -543,7 +546,13 @@ def validate_xacro(output_dir: Path, robot_name: str) -> None:
             capture_output=True, text=True
         )
         if result.returncode != 0:
-            print(f"  [WARN] xacro expansion failed:\n{result.stderr.strip()}")
+            stderr = result.stderr.strip()
+            pkg_name = f"{robot_name}_description"
+            if "PackageNotFoundError" in stderr or "SubstitutionException" in stderr:
+                print(f"  Xacro validation skipped — package not installed yet.")
+                print(f"  $(find {pkg_name}) resolves after: colcon build && source install/setup.zsh")
+            else:
+                print(f"  [WARN] xacro expansion failed:\n{stderr}")
             return
         tmp_path.write_text(result.stdout)
 
@@ -781,7 +790,7 @@ def generate_gazebo_file(
         w('      <publish_odom>true</publish_odom>')
         w('      <publish_odom_tf>true</publish_odom_tf>')
         w('      <odometry_frame>odom</odometry_frame>')
-        w('      <robot_base_frame>base_link</robot_base_frame>')
+        w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
     else:
         # diff_drive (2 wheels, or >4 fallback using outer pair)
         lj_name = lw.joint_name if lw else "left_wheel_joint"
@@ -800,7 +809,7 @@ def generate_gazebo_file(
         w('      <publish_odom_tf>true</publish_odom_tf>')
         w('      <publish_wheel_tf>false</publish_wheel_tf>')
         w('      <odometry_frame>odom</odometry_frame>')
-        w('      <robot_base_frame>base_link</robot_base_frame>')
+        w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
 
     w('    </plugin>')
     w('  </gazebo>')
@@ -849,7 +858,7 @@ def generate_gazebo_file(
     w('  <!-- ═══════════════════════════════════════════════════')
     w('       FRICTION + MATERIAL per link')
     w('       ═══════════════════════════════════════════════════ -->')
-    w('  <gazebo reference="base_link">')
+    w(f'  <gazebo reference="{traits.root_link}">')
     w('    <mu1>0.2</mu1>')
     w('    <mu2>0.2</mu2>')
     w('    <gravity>true</gravity>')
@@ -885,4 +894,4 @@ def generate_gazebo_file(
     print(f"  Generated gazebo/{robot_name}.gazebo")
     print(f"    wheel_separation={sep}m  wheel_diameter={dia}m")
     print(f"    sensor joints: {[s.joint_name for s in traits.sensors if s.joint_type=='revolute']}")
-    print(f"  Tip: uncomment xacro:include in the xacro file to activate plugins!")
+    print(f"  Gazebo plugins activate after: colcon build && source install/setup.zsh")
