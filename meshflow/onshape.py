@@ -53,9 +53,11 @@ def build_config(ids: dict, robot_name: str, assembly_name: str, output_format: 
     }
 
 
+_MESHFLOW_ROOT = Path(__file__).parent.parent
+
 def run_conversion(target_dir: Path) -> None:
-    cmd = ["uv", "run", "onshape-to-robot", str(target_dir)]
-    print(f"\n  Running: {' '.join(cmd)}\n")
+    cmd = ["uv", "run", "--project", str(_MESHFLOW_ROOT), "onshape-to-robot", str(target_dir)]
+    print(f"\n  Running: uv run onshape-to-robot {target_dir}\n")
     result = subprocess.run(cmd, env=os.environ.copy())
     if result.returncode != 0:
         _die("onshape-to-robot failed. Check terminal output.")

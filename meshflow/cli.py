@@ -123,12 +123,12 @@ def main() -> None:
             print("  [WARN] Macro-based xacro is DDR-specific and requires standard link names.")
             print("         Use flat xacro (default) for the universal generalised pipeline.")
 
-    safe_name  = re.sub(r"[^\w\-]", "_", robot_name).lower()
-    script_dir = Path(__file__).parent.parent  # meshflow repo root
+    safe_name   = re.sub(r"[^\w\-]", "_", robot_name).lower()
+    output_base = Path.cwd()
 
     if output_format == "urdf":
         pkg_name    = f"{safe_name}_description"
-        output_dir  = script_dir / "output" / pkg_name
+        output_dir  = output_base / "output" / pkg_name
         staging_dir = output_dir / ".staging"
 
         if output_dir.exists():
@@ -179,7 +179,7 @@ def main() -> None:
 """)
 
     else:
-        output_dir = script_dir / "output" / safe_name
+        output_dir = output_base / "output" / safe_name
         if output_dir.exists():
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
