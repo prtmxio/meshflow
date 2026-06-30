@@ -1,5 +1,9 @@
 # meshflow
 
+<p align="center">
+  <img src="res/meshflow.png" alt="meshflow" width="480"/>
+</p>
+
 **Onshape → ROS 2 simulation package, fully automated.**  
 Supports wheeled robots (2/3/4-wheel) · legged robots *(beta)* · arm robots *(beta)*
 
