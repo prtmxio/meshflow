@@ -6,6 +6,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    import yaml as _yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _yaml = None
+    _YAML_AVAILABLE = False
+
 from .detector import KinematicDAG, URDFTraits
 from .generator import generate_gazebo_file, generate_xacro, validate_xacro
 from .onshape import CONFIG_FILE, build_config, load_api_keys, parse_onshape_url, run_conversion
@@ -144,6 +151,16 @@ def main() -> None:
         restructure_for_ros2(staging_dir, output_dir, safe_name, pkg_name)
         validate_urdf(output_dir, safe_name)
 
+        # Load optional per-robot threshold/robot overrides from meshflow.yaml in cwd
+        _overrides: dict = {}
+        _overrides_path = Path.cwd() / "meshflow.yaml"
+        if _overrides_path.exists():
+            if _YAML_AVAILABLE:
+                _overrides = _yaml.safe_load(_overrides_path.read_text()) or {}
+                print(f"  [INFO] Loaded overrides from {_overrides_path}")
+            else:
+                print("  [WARN] meshflow.yaml found but pyyaml is not installed — overrides ignored.")
+
         # Detect traits first so xacro generation can emit correct joint types
         urdf_path = output_dir / "models" / "urdf" / f"{safe_name}.urdf"
         traits = None
@@ -151,7 +168,7 @@ def main() -> None:
         if urdf_path.exists():
             mesh_dir = output_dir / "models" / "meshes"
             dag    = KinematicDAG(urdf_path, mesh_dir=mesh_dir)
-            traits = URDFTraits.from_dag(dag)
+            traits = URDFTraits.from_dag(dag, overrides=_overrides)
             drive_wheel_joints = {n.joint_name for n in traits.drive_wheels}
 
         robot_kind = traits.robot_kind if traits else "wheeled"

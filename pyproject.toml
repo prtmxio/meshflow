@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv",
     "numpy",
     "trimesh",
+    "pyyaml",
     "onshape-to-robot>=1.8.2",
 ]
 

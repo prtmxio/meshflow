@@ -22,6 +22,41 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# Classification thresholds — override via meshflow.yaml (thresholds: section)
+# ---------------------------------------------------------------------------
+
+THRESHOLDS: dict = {
+    # drive-wheel classification
+    "wheel_z_dot_max":        0.5,    # rotation axis max vertical component
+    "wheel_z_min_max":        0.20,   # lowest vertex max height from ground (m)
+    # fixed-sensor gate
+    "sensor_z_min_min":       0.05,   # lowest vertex min height from ground (m)
+    # caster detection
+    "caster_z_min_max":       0.01,   # lowest vertex max height to count as caster (m)
+    # omni-hub co-location exclusion (same-parent hub mesh near a drive wheel)
+    "hub_y_dot_min":          0.85,   # sibling Y-axis alignment minimum
+    "hub_dist_max":           0.015,  # sibling origin distance max (m)
+    # revolute sensor guard — keeps Y-axis revolutes from being called sensors
+    "rev_sensor_y_dot_max":   0.5,    # max Y-dot to treat revolute as sensor not wheel
+    # lidar disc geometry (AABB sorted ascending: s[0] ≤ s[1] ≤ s[2])
+    "lidar_min_span":         0.04,   # minimum mid-extent for disc shape (m)
+    "lidar_thin_ratio":       0.65,   # max thin/mid — disc must be "flat"
+    "lidar_round_ratio":      0.65,   # min mid/max — two large dims must be similar
+    # imu geometry
+    "imu_max_extent":         0.04,   # maximum any single extent (m)
+    # camera geometry
+    "camera_thin_max":        0.04,   # maximum thin dimension (m)
+    "camera_size_max":        0.15,   # maximum overall size (m)
+    # depth camera geometry
+    "depth_thin_max":         0.06,   # maximum thin dimension (m)
+    "depth_size_min":         0.08,   # minimum wide dimension (m)
+    # 4-wheel passive detection: if large-pair mean / small-pair mean exceeds this,
+    # the smaller pair is treated as passive and diff_drive is used instead of skid_steer
+    "passive_wheel_diam_ratio": 1.5,
+}
+
+
+# ---------------------------------------------------------------------------
 # Math helpers
 # ---------------------------------------------------------------------------
 
@@ -244,40 +279,43 @@ class KinematicDAG:
 # Sensor geometry heuristics (trimesh-gated — NO name matching)
 # ---------------------------------------------------------------------------
 
-def _looks_like_lidar(node: KinematicNode) -> bool:
+def _looks_like_lidar(node: KinematicNode, thresholds=None) -> bool:
     """Flat disc/cylinder: thinnest dim << other two, and the two large dims similar."""
     ext = node.aabb_extents
     if ext is None:
         return False
+    t = thresholds or THRESHOLDS
     s = sorted([float(e) for e in ext])
-    # s[0] <= s[1] <= s[2]; disc: both large dims > 4cm, thin < 65% of mid, mid/large > 65%
-    return s[1] > 0.04 and s[0] / s[1] < 0.65 and s[1] / s[2] > 0.65
+    return s[1] > t["lidar_min_span"] and s[0] / s[1] < t["lidar_thin_ratio"] and s[1] / s[2] > t["lidar_round_ratio"]
 
 
-def _looks_like_imu(node: KinematicNode) -> bool:
-    """Tiny cube: all extents under 40 mm."""
+def _looks_like_imu(node: KinematicNode, thresholds=None) -> bool:
+    """Tiny cube: all extents under threshold."""
     ext = node.aabb_extents
     if ext is None:
         return False
-    return all(float(e) < 0.04 for e in ext)
+    t = thresholds or THRESHOLDS
+    return all(float(e) < t["imu_max_extent"] for e in ext)
 
 
-def _looks_like_camera(node: KinematicNode) -> bool:
+def _looks_like_camera(node: KinematicNode, thresholds=None) -> bool:
     """Thin rectangular box (not disc-like, not huge)."""
     ext = node.aabb_extents
     if ext is None:
         return False
+    t = thresholds or THRESHOLDS
     s = sorted([float(e) for e in ext])
-    return s[0] < 0.04 and s[-1] < 0.15 and not _looks_like_lidar(node)
+    return s[0] < t["camera_thin_max"] and s[-1] < t["camera_size_max"] and not _looks_like_lidar(node, t)
 
 
-def _looks_like_depth(node: KinematicNode) -> bool:
-    """Depth camera: like a camera but the largest dim ≥ 80 mm."""
+def _looks_like_depth(node: KinematicNode, thresholds=None) -> bool:
+    """Depth camera: like a camera but the largest dim ≥ depth_size_min."""
     ext = node.aabb_extents
     if ext is None:
         return False
+    t = thresholds or THRESHOLDS
     s = sorted([float(e) for e in ext])
-    return s[0] < 0.06 and s[-1] >= 0.08 and not _looks_like_lidar(node)
+    return s[0] < t["depth_thin_max"] and s[-1] >= t["depth_size_min"] and not _looks_like_lidar(node, t)
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +461,9 @@ class URDFTraits:
         return joints
 
     @classmethod
-    def from_dag(cls, dag: KinematicDAG) -> 'URDFTraits':
+    def from_dag(cls, dag: KinematicDAG, overrides=None) -> 'URDFTraits':
+        t = {**THRESHOLDS, **(overrides.get("thresholds", {}) if overrides else {})}
+
         drive_wheels:     list[KinematicNode] = []
         passive_contacts: list[KinematicNode] = []
         sensors:          list[KinematicNode] = []
@@ -448,8 +488,8 @@ class URDFTraits:
             is_drive_wheel = (not parent_is_wheel
                               and jt in ('continuous', 'revolute')
                               and parent_joint_type in ('root', 'fixed')  # body-attached only
-                              and z_dot < 0.5
-                              and z_min < 0.20
+                              and z_dot < t["wheel_z_dot_max"]
+                              and z_min < t["wheel_z_min_max"]
                               and _is_leaf_or_fixed_children(node))       # no non-fixed children
 
             def _has_colocated_wheel_sibling() -> bool:
@@ -459,8 +499,8 @@ class URDFTraits:
                 return any(
                     s is not node
                     and s.joint_type == 'continuous'
-                    and abs(float(np.dot(s.axis_world, Y_HAT))) > 0.85
-                    and float(np.linalg.norm(s.global_T[:3, 3] - pos)) < 0.015
+                    and abs(float(np.dot(s.axis_world, Y_HAT))) > t["hub_y_dot_min"]
+                    and float(np.linalg.norm(s.global_T[:3, 3] - pos)) < t["hub_dist_max"]
                     for s in siblings
                 )
 
@@ -469,11 +509,11 @@ class URDFTraits:
                 drive_wheels.append(node)
 
             # ── Passive contact (caster) ───────────────────────────────────
-            elif jt == 'fixed' and not parent_is_wheel and node.link_name != root_link and z_min < 0.01:
+            elif jt == 'fixed' and not parent_is_wheel and node.link_name != root_link and z_min < t["caster_z_min_max"]:
                 passive_contacts.append(node)
 
             # ── Rotating sensor (revolute lidar) ──────────────────────────
-            elif (jt == 'revolute' and y_dot < 0.5 and not parent_is_wheel
+            elif (jt == 'revolute' and y_dot < t["rev_sensor_y_dot_max"] and not parent_is_wheel
                   and _is_leaf_or_fixed_children(node)):
                 sensors.append(node)
 
@@ -482,7 +522,7 @@ class URDFTraits:
             # _has_colocated_wheel_sibling: excludes fixed nodes co-located with a wheel sibling
             #   (sam-style hubs where both hub and wheel are direct children of base_link)
             elif (jt == 'fixed' and not parent_is_wheel and not _has_colocated_wheel_sibling()
-                  and z_min > 0.05 and node.link_name != root_link
+                  and z_min > t["sensor_z_min_min"] and node.link_name != root_link
                   and _is_leaf_or_fixed_children(node)):
                 sensors.append(node)
 
@@ -500,6 +540,28 @@ class URDFTraits:
                           parent_joint_type=node.joint_type)
 
         _classify(dag.root_node)
+
+        # 4-wheel passive detection: trim driven set if override or diameter ratio reveals passives
+        forced_count = (overrides or {}).get("robot", {}).get("drive_wheel_count")
+        if forced_count is not None:
+            n_keep = int(forced_count)
+            if len(drive_wheels) > n_keep:
+                drive_wheels.sort(key=_compute_wheel_diameter, reverse=True)
+                drive_wheels[:] = drive_wheels[:n_keep]
+                print(f"  [INFO] drive_wheel_count override: keeping {n_keep} largest-diameter wheel(s).")
+        elif len(drive_wheels) == 4:
+            diams = [_compute_wheel_diameter(n) for n in drive_wheels]
+            ds = sorted(diams)
+            small_mean = (ds[0] + ds[1]) / 2
+            large_mean = (ds[2] + ds[3]) / 2
+            ratio = large_mean / small_mean if small_mean > 0 else 0.0
+            if ratio > t["passive_wheel_diam_ratio"]:
+                pairs = sorted(zip(diams, drive_wheels), key=lambda x: x[0], reverse=True)
+                drive_wheels[:] = [w for _, w in pairs[:2]]
+                print(
+                    f"  [INFO] 4-wheel robot: larger pair is {ratio:.1f}x bigger — "
+                    f"treating smaller pair as passive. Using diff_drive."
+                )
 
         if not _TRIMESH_AVAILABLE:
             if sensors:

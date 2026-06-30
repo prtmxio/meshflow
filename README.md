@@ -5,7 +5,7 @@
 <h1 align="center">meshflow</h1>
 
 <p align="center">
-  Automatic <strong>Onshape → ROS&nbsp;2</strong> simulation package generator.
+  <strong>Onshape → ROS&nbsp;2</strong> simulation package generator.
 </p>
 
 <p align="center">
@@ -22,10 +22,10 @@
 
 </p>
 
-**Onshape → ROS 2 simulation package, fully automated.**  
+**Full ROS 2 simulation package, generated directly from your Onshape assembly.**  
 Supports wheeled robots (2/3/4-wheel) · legged robots *(beta)* · arm robots *(beta)*
 
-meshflow takes an Onshape CAD assembly URL and produces a complete, simulation-ready ROS 2 description package — URDF, xacro, Gazebo plugins, launch files — with zero manual configuration. Robot structure is derived entirely from URDF geometry: wheeled robots (2/3/4-wheel) get drive plugins and odometry; legged and arm robots get ros2_control wired up automatically. No joint or link naming conventions required.
+meshflow takes an Onshape assembly URL and outputs a complete, simulation-ready ROS 2 description package: URDF, xacro, Gazebo plugins, and launch files. Robot type is inferred entirely from URDF geometry; wheeled robots get drive plugins and odometry, legged and arm robots get ros2_control wired up automatically. No joint or link naming conventions required.
 
 ---
 
@@ -54,7 +54,7 @@ Given one Onshape URL and a robot name, meshflow generates a fully structured RO
     └── robot.rviz             # pre-configured RViz layout
 ```
 
-Plugins and artifacts auto-generated based on detected geometry:
+Plugins generated per detected geometry:
 
 | Robot kind | Detected when | Gazebo plugin |
 |---|---|---|
@@ -78,7 +78,7 @@ Per-link OGRE colors are extracted from URDF `<material>` tags and written to `m
 | Dependency | Version | Notes |
 |---|---|---|
 | Python | 3.10+ | |
-| [uv](https://docs.astral.sh/uv/) | any | package manager — auto-installed by `install.sh` |
+| [uv](https://docs.astral.sh/uv/) | any | package manager (auto-installed by `install.sh`) |
 | ROS 2 | Humble or later | must be sourced before launching |
 | Gazebo Classic | 11 | `gazebo_ros` bridge |
 | `ros-$ROS_DISTRO-gazebo-ros-pkgs` | — | Gazebo ↔ ROS bridge |
@@ -106,7 +106,7 @@ sudo apt install \
   ros-humble-gazebo-ros2-control
 ```
 
-If these are not installed, meshflow still generates the package and the robot spawns in Gazebo — controller spawners are skipped with an install hint printed to stderr.
+If these are not installed, meshflow still generates the package and the robot spawns in Gazebo; controller spawners are skipped with an install hint printed to stderr.
 
 ---
 
@@ -133,7 +133,7 @@ source ~/.zshrc
 
 ---
 
-## Setup — Onshape API keys
+## Setup: Onshape API keys
 
 meshflow reads your CAD via the Onshape REST API. You need a free API key pair.
 
@@ -143,7 +143,7 @@ meshflow reads your CAD via the Onshape REST API. You need a free API key pair.
 3. Go to the **Developer** tab
 4. Click the **API Keys** link
 5. Click **Create new API key**
-6. Copy **both** the Access Key and Secret Key before closing — the secret is only shown once
+6. Copy **both** the Access Key and Secret Key before closing; the secret is only shown once
 
 **Save them:**
 
@@ -183,13 +183,13 @@ The generated package lands in `output/<robot>_description/`.
 
 ## Run in Gazebo
 
-**Step 1 — copy the package into your ROS 2 workspace:**
+**Step 1: copy the package into your ROS 2 workspace:**
 
 ```bash
 cp -r output/<robot>_description ~/ros2_ws/src/
 ```
 
-**Step 2 — build:**
+**Step 2: build:**
 
 ```bash
 cd ~/ros2_ws
@@ -197,7 +197,7 @@ colcon build --packages-select <robot>_description
 source install/setup.zsh   # or setup.bash
 ```
 
-**Step 3 — launch:**
+**Step 3: launch:**
 
 ```bash
 ros2 launch <robot>_description gazebo.launch.py
@@ -242,10 +242,10 @@ meshflow              run the converter
 
 | Module | Role |
 |---|---|
-| `cli.py` | Entry point — prompts, subcommand dispatch |
+| `cli.py` | Entry point; handles prompts and subcommand dispatch |
 | `onshape.py` | API auth, URL parsing, `onshape-to-robot` subprocess |
 | `restructure.py` | File layout, `package://` URI patching, boilerplate |
-| `detector.py` | `KinematicDAG` + `URDFTraits` — geometry-only classification |
+| `detector.py` | `KinematicDAG` and `URDFTraits`; geometry-only robot classification |
 | `generator.py` | `.gazebo` and xacro generation from `URDFTraits` |
 | `templates.py` | All string templates as named constants |
 
