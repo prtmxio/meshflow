@@ -29,6 +29,26 @@ meshflow takes an Onshape assembly URL and outputs a complete, simulation-ready 
 
 ---
 
+## Samples
+
+**My bot** — built from scratch in Onshape:
+
+| RViz | Gazebo |
+|:---:|:---:|
+| ![RViz — my bot](res/r0.png) | ![Gazebo — my bot](res/g0.png) |
+
+**Public Onshape assemblies** rendered with meshflow:
+
+| RViz | Gazebo |
+|:---:|:---:|
+| ![RViz — bot 1](res/r1.png) | ![Gazebo — bot 1](res/g1.png) |
+
+| RViz | Gazebo |
+|:---:|:---:|
+| ![RViz — bot 2](res/r2.png) | ![Gazebo — bot 2](res/g2.png) |
+
+---
+
 ## What you get
 
 Given one Onshape URL and a robot name, meshflow generates a fully structured ROS 2 package:
