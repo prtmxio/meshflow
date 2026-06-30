@@ -25,15 +25,16 @@ def _banner(text: str) -> None:
 def restructure_for_ros2(staging_dir: Path, output_dir: Path, robot_name: str, pkg_name: str) -> None:
     _banner("Restructuring for ROS 2 Architecture")
 
-    models_dir = output_dir / "models"
-    urdf_dir   = models_dir / "urdf"
-    meshes_dir = models_dir / "meshes"
-    config_dir = output_dir / "config"
-    rviz_dir   = output_dir / "rviz"
-    launch_dir = output_dir / "launch"
-    gazebo_dir = output_dir / "gazebo"
+    models_dir    = output_dir / "models"
+    urdf_dir      = models_dir / "urdf"
+    meshes_dir    = models_dir / "meshes"
+    config_dir    = output_dir / "config"
+    rviz_dir      = output_dir / "rviz"
+    launch_dir    = output_dir / "launch"
+    gazebo_dir    = output_dir / "gazebo"
+    materials_dir = output_dir / "media" / "materials" / "scripts"
 
-    for d in [urdf_dir, meshes_dir, config_dir, rviz_dir, launch_dir, gazebo_dir]:
+    for d in [urdf_dir, meshes_dir, config_dir, rviz_dir, launch_dir, gazebo_dir, materials_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     # 1. Isolate config

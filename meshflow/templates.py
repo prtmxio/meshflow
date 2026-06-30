@@ -126,6 +126,24 @@ def generate_launch_description():
         name='GAZEBO_MODEL_PATH',
         value=system_models + (':' + existing if existing else '')
     )
+    # Expose the package root so Gazebo Classic finds materials/scripts/*.material
+    # (Gazebo searches <GAZEBO_RESOURCE_PATH>/materials/scripts/ for OGRE scripts)
+    # Always include /usr/share/gazebo-11 — gzserver.launch.py builds its own
+    # GAZEBO_RESOURCE_PATH from GazeboRosPaths.get_paths() which returns empty on
+    # a bare ROS2 install (Gazebo Classic doesn't export a gazebo_media_path tag),
+    # so if we don't inject the system path here gzserver can't find OGRE shaders
+    # and gzclient crashes with a null Camera assertion.
+    existing_rp = os.environ.get('GAZEBO_RESOURCE_PATH', '')
+    _gz11 = '/usr/share/gazebo-11'
+    _rp_parts = [pkg_path]
+    if existing_rp:
+        _rp_parts.append(existing_rp)
+    if _gz11 not in existing_rp.split(':'):
+        _rp_parts.append(_gz11)
+    fix_resource_path = SetEnvironmentVariable(
+        name='GAZEBO_RESOURCE_PATH',
+        value=':'.join(_rp_parts)
+    )
 
     # ── gzserver (physics) — gui:=false, we start gzclient separately ─────
     # The default gazebo.launch.py injects libgazebo_ros_eol_gui.so which
@@ -189,6 +207,7 @@ def generate_launch_description():
     return LaunchDescription([
         disable_online_db,   # must come before gazebo starts
         fix_model_path,
+        fix_resource_path,
         gzserver,
         rsp,
         gzclient,
@@ -198,7 +217,7 @@ def generate_launch_description():
 """
 
 GAZEBO_LAUNCH_NONWHEELED_TEMPLATE = """import os
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 from launch import LaunchDescription
 from launch.actions import (
     ExecuteProcess, IncludeLaunchDescription,
@@ -212,6 +231,18 @@ def generate_launch_description():
     pkg_name   = 'PKG_NAME'
     pkg_path   = get_package_share_directory(pkg_name)
     gazebo_pkg = get_package_share_directory('gazebo_ros')
+
+    try:
+        get_package_share_directory('controller_manager')
+        _has_ros2_control = True
+    except PackageNotFoundError:
+        import sys
+        print(
+            '[meshflow] WARNING: controller_manager not found — controller spawners skipped.\\n'
+            '  Install: sudo apt install ros-humble-ros2-control ros-humble-gazebo-ros2-control',
+            file=sys.stderr
+        )
+        _has_ros2_control = False
 
     xacro_file = os.path.join(pkg_path, 'models', 'urdf', 'ROBOT_NAME.urdf.xacro')
     urdf_str   = xacro.process_file(xacro_file).toxml()
@@ -229,6 +260,17 @@ def generate_launch_description():
     fix_model_path = SetEnvironmentVariable(
         name='GAZEBO_MODEL_PATH',
         value=system_models + (':' + existing if existing else '')
+    )
+    existing_rp = os.environ.get('GAZEBO_RESOURCE_PATH', '')
+    _gz11 = '/usr/share/gazebo-11'
+    _rp_parts = [pkg_path]
+    if existing_rp:
+        _rp_parts.append(existing_rp)
+    if _gz11 not in existing_rp.split(':'):
+        _rp_parts.append(_gz11)
+    fix_resource_path = SetEnvironmentVariable(
+        name='GAZEBO_RESOURCE_PATH',
+        value=':'.join(_rp_parts)
     )
 
     gzserver = IncludeLaunchDescription(
@@ -266,34 +308,36 @@ def generate_launch_description():
         ]
     )
 
-    # Load ros2_control controllers after spawn
-    load_joint_state_broadcaster = TimerAction(
-        period=15.0,
-        actions=[
-            Node(
-                package='controller_manager',
-                executable='spawner',
-                arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager'],
-                output='screen',
-            )
+    ctrl_actions = []
+    if _has_ros2_control:
+        ctrl_actions = [
+            TimerAction(
+                period=15.0,
+                actions=[
+                    Node(
+                        package='controller_manager',
+                        executable='spawner',
+                        arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager'],
+                        output='screen',
+                    )
+                ]
+            ),
+            TimerAction(
+                period=17.0,
+                actions=[
+                    Node(
+                        package='controller_manager',
+                        executable='spawner',
+                        arguments=[
+                            'joint_trajectory_controller',
+                            '--controller-manager', '/controller_manager',
+                            '--param-file', os.path.join(pkg_path, 'config', 'controllers.yaml'),
+                        ],
+                        output='screen',
+                    )
+                ]
+            ),
         ]
-    )
-
-    load_joint_trajectory_controller = TimerAction(
-        period=17.0,
-        actions=[
-            Node(
-                package='controller_manager',
-                executable='spawner',
-                arguments=[
-                    'joint_trajectory_controller',
-                    '--controller-manager', '/controller_manager',
-                    '--param-file', os.path.join(pkg_path, 'config', 'controllers.yaml'),
-                ],
-                output='screen',
-            )
-        ]
-    )
 
     rviz = TimerAction(
         period=19.0,
@@ -311,12 +355,12 @@ def generate_launch_description():
     return LaunchDescription([
         disable_online_db,
         fix_model_path,
+        fix_resource_path,
         gzserver,
         rsp,
         gzclient,
         spawn,
-        load_joint_state_broadcaster,
-        load_joint_trajectory_controller,
+        *ctrl_actions,
         rviz,
     ])
 """
@@ -351,7 +395,7 @@ project(PKG_NAME)
 
 find_package(ament_cmake REQUIRED)
 
-install(DIRECTORY models launch rviz config gazebo
+install(DIRECTORY models launch rviz config gazebo media
   DESTINATION share/${PROJECT_NAME}
 )
 

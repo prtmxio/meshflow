@@ -19,3 +19,8 @@ dev = ["pytest"]
 
 [project.scripts]
 meshflow = "meshflow.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

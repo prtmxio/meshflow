@@ -245,12 +245,13 @@ class KinematicDAG:
 # ---------------------------------------------------------------------------
 
 def _looks_like_lidar(node: KinematicNode) -> bool:
-    """Flat disc/cylinder: the two XZ dimensions dwarf the Y (thickness)."""
+    """Flat disc/cylinder: thinnest dim << other two, and the two large dims similar."""
     ext = node.aabb_extents
     if ext is None:
         return False
-    xz = sorted([float(ext[0]), float(ext[2])])
-    return xz[1] > 0.04 and xz[0] / xz[1] < 0.5
+    s = sorted([float(e) for e in ext])
+    # s[0] <= s[1] <= s[2]; disc: both large dims > 4cm, thin < 65% of mid, mid/large > 65%
+    return s[1] > 0.04 and s[0] / s[1] < 0.65 and s[1] / s[2] > 0.65
 
 
 def _looks_like_imu(node: KinematicNode) -> bool:
@@ -280,6 +281,28 @@ def _looks_like_depth(node: KinematicNode) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Sensor name heuristics (secondary signal — geometry takes priority when available)
+# ---------------------------------------------------------------------------
+
+def _sensor_type_from_name(link_name: str, joint_name: str = "") -> str | None:
+    """Return sensor type hint from link/joint name keywords. None if ambiguous."""
+    n = (link_name + " " + joint_name).lower()
+    if any(k in n for k in ("lidar", "laser", "scan", "ray", "lrf",
+                             "hokuyo", "velodyne", "rplidar", "sick", "ust")):
+        return "lidar"
+    if any(k in n for k in ("depth", "realsense", "kinect", "d435",
+                             "d415", "d455", "structured")):
+        return "depth"
+    if any(k in n for k in ("cam", "camera", "rgb", "mono",
+                             "stereo", "lens", "vision")):
+        return "camera"
+    if any(k in n for k in ("imu", "gyro", "accel", "mpu",
+                             "bno", "ahrs", "inertial", "mems")):
+        return "imu"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Sensor plugin registry
 # ---------------------------------------------------------------------------
 
@@ -294,7 +317,10 @@ SENSOR_PLUGINS: dict = {
         },
     },
     "lidar_fixed": {
-        "match": lambda node: node.joint_type == "fixed" and _looks_like_lidar(node),
+        "match": lambda node: node.joint_type == "fixed" and (
+            _looks_like_lidar(node) or
+            (node.aabb_extents is None and _sensor_type_from_name(node.link_name, node.joint_name) == "lidar")
+        ),
         "plugin_file": "libgazebo_ros_ray_sensor.so",
         "sensor_type": "ray",
         "defaults": {
@@ -303,19 +329,28 @@ SENSOR_PLUGINS: dict = {
         },
     },
     "camera_rgb": {
-        "match": lambda node: node.joint_type == "fixed" and _looks_like_camera(node),
+        "match": lambda node: node.joint_type == "fixed" and (
+            _looks_like_camera(node) or
+            (node.aabb_extents is None and _sensor_type_from_name(node.link_name, node.joint_name) == "camera")
+        ),
         "plugin_file": "libgazebo_ros_camera.so",
         "sensor_type": "camera",
         "defaults": {"width": 640, "height": 480, "fov": 1.047, "update_rate": 30},
     },
     "depth_camera": {
-        "match": lambda node: node.joint_type == "fixed" and _looks_like_depth(node),
+        "match": lambda node: node.joint_type == "fixed" and (
+            _looks_like_depth(node) or
+            (node.aabb_extents is None and _sensor_type_from_name(node.link_name, node.joint_name) == "depth")
+        ),
         "plugin_file": "libgazebo_ros_depth_camera.so",
         "sensor_type": "depth",
         "defaults": {"width": 640, "height": 480, "fov": 1.047, "update_rate": 30},
     },
     "imu": {
-        "match": lambda node: node.joint_type == "fixed" and _looks_like_imu(node),
+        "match": lambda node: node.joint_type == "fixed" and (
+            _looks_like_imu(node) or
+            (node.aabb_extents is None and _sensor_type_from_name(node.link_name, node.joint_name) == "imu")
+        ),
         "plugin_file": "libgazebo_ros_imu_sensor.so",
         "sensor_type": "imu",
         "defaults": {"update_rate": 100},
@@ -331,6 +366,13 @@ def _is_leaf_or_fixed_children(node: KinematicNode) -> bool:
     if not node.children:
         return True
     return all(c.joint_type == 'fixed' for c in node.children)
+
+
+def _subtree_has_movable_joint(node: KinematicNode) -> bool:
+    """True if this node or any descendant has a non-fixed, non-root joint."""
+    if node.joint_type not in ('fixed', 'root'):
+        return True
+    return any(_subtree_has_movable_joint(c) for c in node.children)
 
 
 def _compute_wheel_diameter(wheel: Optional[KinematicNode]) -> float:
@@ -374,7 +416,10 @@ class URDFTraits:
     def movable_joint_names(self) -> list[str]:
         """Joint names for the joint_state_publisher plugin."""
         joints = [w.joint_name for w in self.drive_wheels]
-        joints += [s.joint_name for s in self.sensors if s.joint_type == 'revolute']
+        joints += [
+            s.joint_name for s in self.sensors
+            if s.joint_type == 'revolute' and s.joint_name not in self.passive_joints
+        ]
         return joints
 
     @classmethod
@@ -491,8 +536,13 @@ class URDFTraits:
 
         all_links = [l.get('name') for l in dag.xml_root.findall('link')]
 
-        # Classify robot kind: check drive wheels first, then branch topology
-        n_top_branches = len(dag.root_node.children)
+        # Classify robot kind: check drive wheels first, then branch topology.
+        # Count only branches that have at least one movable joint — fixed structural
+        # mounts (sensor brackets, covers) attached to root must not inflate the count.
+        n_top_branches = sum(
+            1 for c in dag.root_node.children
+            if _subtree_has_movable_joint(c)
+        )
         if len(drive_wheels) >= 2:
             robot_kind = "wheeled"
         elif n_top_branches >= 3:
