@@ -1,7 +1,25 @@
-# meshflow
+<p align="center">
+  <img src="res/meshflow.png" alt="meshflow" width="220"/>
+</p>
+
+<h1 align="center">meshflow</h1>
 
 <p align="center">
-  <img src="res/meshflow.png" alt="meshflow" width="480"/>
+  Automatic <strong>Onshape → ROS&nbsp;2</strong> simulation package generator.
+</p>
+
+<p align="center">
+  Generate complete ROS 2 robot description packages directly from an Onshape assembly —
+  including URDF, xacro, Gazebo integration, RViz configuration, and launch files.
+</p>
+
+<p align="center">
+
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![ROS2](https://img.shields.io/badge/ROS2-Humble+-22314E)
+![Gazebo](https://img.shields.io/badge/Gazebo-Classic%2011-orange)
+![License](https://img.shields.io/badge/License-MIT-green)
+
 </p>
 
 **Onshape → ROS 2 simulation package, fully automated.**  
