@@ -35,17 +35,17 @@ meshflow takes an Onshape assembly URL and outputs a complete, simulation-ready 
 
 | RViz | Gazebo |
 |:---:|:---:|
-| ![RViz — my bot](res/r0.png) | ![Gazebo — my bot](res/g0.png) |
+| <img src="res/r0.png" width="340"/> | <img src="res/g0.png" width="340"/> |
 
 **Public Onshape assemblies** rendered with meshflow:
 
 | RViz | Gazebo |
 |:---:|:---:|
-| ![RViz — bot 1](res/r1.png) | ![Gazebo — bot 1](res/g1.png) |
+| <img src="res/r1.png" width="340"/> | <img src="res/g1.png" width="340"/> |
 
 | RViz | Gazebo |
 |:---:|:---:|
-| ![RViz — bot 2](res/r2.png) | ![Gazebo — bot 2](res/g2.png) |
+| <img src="res/r2.png" width="340"/> | <img src="res/g2.png" width="340"/> |
 
 ---
 
