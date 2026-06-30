@@ -1,8 +1,9 @@
 # meshflow
 
-**Onshape → ROS 2 simulation package, fully automated.**
+**Onshape → ROS 2 simulation package, fully automated.**  
+Supports wheeled robots (2/3/4-wheel) · legged robots *(beta)* · arm robots *(beta)*
 
-meshflow takes an Onshape CAD assembly URL and produces a complete, simulation-ready ROS 2 description package — URDF, xacro, Gazebo plugins, launch files — with zero manual configuration. Robot structure is derived entirely from URDF geometry, so it works on any differential-drive robot regardless of how joints and links are named.
+meshflow takes an Onshape CAD assembly URL and produces a complete, simulation-ready ROS 2 description package — URDF, xacro, Gazebo plugins, launch files — with zero manual configuration. Robot structure is derived entirely from URDF geometry: wheeled robots (2/3/4-wheel) get drive plugins and odometry; legged and arm robots get ros2_control wired up automatically. No joint or link naming conventions required.
 
 ---
 
@@ -21,16 +22,32 @@ Given one Onshape URL and a robot name, meshflow generates a fully structured RO
 │   │   └── <robot>.urdf.xacro # xacro with Gazebo plugins wired in
 │   └── meshes/                # STL files pulled from Onshape
 ├── gazebo/
-│   └── <robot>.gazebo         # diff-drive + lidar + friction plugins
+│   └── <robot>.gazebo         # drive + sensor + friction plugins
+├── config/                    # legged / arm only
+│   └── controllers.yaml
+├── media/
+│   └── materials/scripts/
+│       └── <robot>.material   # OGRE per-link colors for Gazebo Classic
 └── rviz/
     └── robot.rviz             # pre-configured RViz layout
 ```
 
-Plugins auto-generated based on detected geometry:
-- **Differential drive** (`/cmd_vel` in, `/odom` out) — wheel separation and diameter measured from mesh
-- **Lidar / ray sensor** (`/scan`, 360° @ 20 Hz, 12 m range) — for any elevated revolute joint
-- **Joint state publisher** — keeps TF live for all moving joints
-- **Friction and material** — per-link Gazebo surface properties
+Plugins and artifacts auto-generated based on detected geometry:
+
+| Robot kind | Detected when | Gazebo plugin |
+|---|---|---|
+| Differential drive | 2–3 `continuous` wheels, axis ≈ Y | `libgazebo_ros_diff_drive.so` |
+| Skid steer | 4 `continuous` wheels, axis ≈ Y | `libgazebo_ros_skid_steer_drive.so` |
+| Legged *(beta)* | 3+ top-level branches with movable joints, no drive wheels | `libgazebo_ros2_control.so` (if installed) |
+| Arm *(beta)* | 1–2 top-level movable branches, no drive wheels | `libgazebo_ros2_control.so` (if installed) |
+| Lidar (revolute) | `revolute` joint, axis not Y, z > 5 cm | `libgazebo_ros_ray_sensor.so` |
+| Camera (fixed) | `fixed` leaf, elongated box geometry or `cam`/`camera` in name | `libgazebo_ros_camera.so` |
+| Depth camera | `fixed` leaf, box ~6 cm thin × ≥ 8 cm wide, or `depth`/`realsense` in name | `libgazebo_ros_depth_camera.so` |
+| IMU | `fixed` leaf, near-cubic geometry < 4 cm, or `imu`/`gyro` in name | `libgazebo_ros_imu_sensor.so` |
+
+Per-link OGRE colors are extracted from URDF `<material>` tags and written to `media/materials/scripts/<robot>.material`.
+
+> **Note:** Legged and arm robot support is in beta. The robot will spawn and render correctly in Gazebo and RViz; controller integration (`joint_trajectory_controller`) requires `ros-humble-ros2-control` and is actively being tested across robot configurations.
 
 ---
 
@@ -46,6 +63,8 @@ Plugins auto-generated based on detected geometry:
 | `ros-$ROS_DISTRO-robot-state-publisher` | — | TF broadcast |
 | `ros-$ROS_DISTRO-joint-state-publisher-gui` | — | manual joint control in RViz |
 | `ros-$ROS_DISTRO-xacro` | — | xacro processing |
+| `ros-$ROS_DISTRO-ros2-control` | optional | legged/arm controller spawners |
+| `ros-$ROS_DISTRO-gazebo-ros2-control` | optional | Gazebo ros2_control plugin |
 
 Install the ROS 2 packages (replace `humble` with your distro):
 
@@ -56,6 +75,16 @@ sudo apt install \
   ros-humble-joint-state-publisher-gui \
   ros-humble-xacro
 ```
+
+For legged / arm robots, also install:
+
+```bash
+sudo apt install \
+  ros-humble-ros2-control \
+  ros-humble-gazebo-ros2-control
+```
+
+If these are not installed, meshflow still generates the package and the robot spawns in Gazebo — controller spawners are skipped with an install hint printed to stderr.
 
 ---
 
@@ -200,7 +229,17 @@ meshflow              run the converter
 
 ### How geometry detection works
 
-`KinematicDAG` parses the URDF `<joint>` tree and computes global 4×4 transforms for every link. `URDFTraits` then classifies each node using **only spatial and kinematic properties** — no name matching anywhere:
+`KinematicDAG` parses the URDF `<joint>` tree and computes global 4×4 transforms for every link. `URDFTraits` then classifies each node using spatial and kinematic properties:
+
+**Robot kind** (checked in order):
+
+| Robot kind | Rule |
+|---|---|
+| Wheeled | 2+ `continuous` joints, axis ≈ Y, z_min < 20 cm |
+| Legged | 3+ top-level branches each containing at least one movable joint |
+| Arm | 1–2 top-level movable branches, no drive wheels |
+
+**Node classification:**
 
 | Classification | Rule |
 |---|---|
@@ -208,6 +247,8 @@ meshflow              run the converter
 | Passive contact (caster) | `fixed` joint, z_min < 1 cm |
 | Revolute sensor | `revolute` joint, axis not Y, z_min > 5 cm |
 | Fixed sensor | `fixed` leaf node, z_min > 5 cm, no co-located drive wheel sibling |
+
+Sensor type falls back to **link/joint name keywords** (`lidar`, `cam`, `imu`, `depth`, `realsense`, …) when mesh geometry is not available (zero-volume or massless visual-only links).
 
 Wheel diameter and separation are measured directly from mesh geometry via `trimesh`, so plugin values are physically accurate without any manual input.
 
