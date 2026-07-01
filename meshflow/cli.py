@@ -110,18 +110,17 @@ def main() -> None:
 
     _banner("Onshape → URDF Converter (ROS 2 Edition)")
 
-    url = ask("\nOnshape URL")
+    url = ask("\nOnshape Assembly URL  (copy from the Assembly tab, not Part Studio)")
     if not url:
         die("No URL entered.")
     ids = parse_onshape_url(url)
 
     print()
-    robot_name    = ask("Robot name",    default="my_robot")
-    assembly_name = ask("Assembly name", default="asm")
+    robot_name    = ask("Robot name", default="my_robot")
 
-    output_format = ask("Output format (urdf/sdf/mujoco)", default="urdf")
+    output_format = ask("Output format", default="urdf")
     if output_format not in ("urdf", "sdf", "mujoco"):
-        die(f"Invalid output format '{output_format}'.")
+        die(f"Unknown output format '{output_format}'. Valid options: urdf, sdf, mujoco.")
 
     macro_based = False
     if output_format == "urdf":
@@ -142,7 +141,7 @@ def main() -> None:
             shutil.rmtree(output_dir)
         staging_dir.mkdir(parents=True, exist_ok=True)
 
-        config = build_config(ids, safe_name, assembly_name, output_format)
+        config = build_config(ids, safe_name, output_format)
         (staging_dir / "config.json").write_text(json.dumps(config, indent=4))
 
         _banner("Extracting Kinematics")
@@ -184,7 +183,11 @@ def main() -> None:
             launch_dir = output_dir / "launch"
             write_gazebo_launch(launch_dir, safe_name, pkg_name, robot_kind=robot_kind)
         else:
-            print("  [WARN] URDF not found — skipping Gazebo plugin generation.")
+            print(
+                "  [WARN] URDF not found — skipping Gazebo plugin generation.\n"
+                "         This usually means onshape-to-robot exported an empty assembly.\n"
+                "         Check that the assembly name matches the tab name in Onshape exactly."
+            )
 
         _banner("Done!")
         print(f"""
@@ -214,7 +217,7 @@ def main() -> None:
             shutil.rmtree(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        config = build_config(ids, safe_name, assembly_name, output_format)
+        config = build_config(ids, safe_name, output_format)
         (output_dir / "config.json").write_text(json.dumps(config, indent=4))
 
         _banner(f"Extracting {output_format.upper()} Kinematics")
