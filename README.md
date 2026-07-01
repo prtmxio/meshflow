@@ -192,10 +192,9 @@ You will be prompted for:
 
 | Prompt | Example |
 |---|---|
-| Onshape URL | `https://cad.onshape.com/documents/abc.../w/def.../e/ghi...` |
+| Onshape Assembly URL | `https://cad.onshape.com/documents/abc.../w/def.../e/ghi...` — copy from the **Assembly tab**, not Part Studio |
 | Robot name | `my_robot` |
-| Assembly name | `asm` (the Onshape assembly tab name) |
-| Output format | `urdf` (also: `sdf`, `mujoco`) |
+| Output format | `urdf` |
 
 The generated package lands in `output/<robot>_description/`.
 
