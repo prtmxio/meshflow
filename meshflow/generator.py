@@ -707,7 +707,7 @@ def _write_lidar_plugin(L: list, node, config: dict) -> None:
     L.append('      </ray>')
     L.append(f'      <plugin name="scan_{link}" filename="{config["plugin_file"]}">')
     L.append('        <ros>')
-    L.append(f'          <remapping>~/out:={link}/scan</remapping>')
+    L.append('          <remapping>~/out:=/scan</remapping>')
     L.append('        </ros>')
     L.append('        <output_type>sensor_msgs/LaserScan</output_type>')
     L.append(f'        <frame_name>{link}</frame_name>')
@@ -736,7 +736,7 @@ def _write_camera_plugin(L: list, node, config: dict) -> None:
     L.append('      </camera>')
     L.append(f'      <plugin name="camera_{link}" filename="{config["plugin_file"]}">')
     L.append('        <ros>')
-    L.append(f'          <remapping>~/image_raw:={link}/image_raw</remapping>')
+    L.append('          <remapping>~/image_raw:=/camera/image_raw</remapping>')
     L.append('        </ros>')
     L.append(f'        <frame_name>{link}</frame_name>')
     L.append('      </plugin>')
@@ -763,7 +763,7 @@ def _write_depth_plugin(L: list, node, config: dict) -> None:
     L.append('      </camera>')
     L.append(f'      <plugin name="depth_{link}" filename="{config["plugin_file"]}">')
     L.append('        <ros>')
-    L.append(f'          <remapping>~/image_raw:={link}/depth/image_raw</remapping>')
+    L.append('          <remapping>~/image_raw:=/camera/depth/image_raw</remapping>')
     L.append('        </ros>')
     L.append(f'        <frame_name>{link}</frame_name>')
     L.append('      </plugin>')
@@ -782,7 +782,7 @@ def _write_imu_plugin(L: list, node, config: dict) -> None:
     L.append('      <imu/>')
     L.append(f'      <plugin name="imu_{link}" filename="{config["plugin_file"]}">')
     L.append('        <ros>')
-    L.append(f'          <remapping>~/out:={link}/imu</remapping>')
+    L.append('          <remapping>~/out:=/imu/data</remapping>')
     L.append('        </ros>')
     L.append(f'        <frame_name>{link}</frame_name>')
     L.append('      </plugin>')
@@ -880,6 +880,7 @@ def generate_gazebo_file(
             w('      <publish_odom_tf>true</publish_odom_tf>')
             w('      <odometry_frame>odom</odometry_frame>')
             w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
+            w(f'      <!-- <robot_base_frame>base_footprint</robot_base_frame>  ← uncomment and comment the line above when using Nav2 (requires base_footprint in xacro) -->')
         else:
             lj_name = lw.joint_name if lw else "left_wheel_joint"
             rj_name = rw.joint_name if rw else "right_wheel_joint"
@@ -898,6 +899,7 @@ def generate_gazebo_file(
             w('      <publish_wheel_tf>false</publish_wheel_tf>')
             w('      <odometry_frame>odom</odometry_frame>')
             w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
+            w(f'      <!-- <robot_base_frame>base_footprint</robot_base_frame>  ← uncomment and comment the line above when using Nav2 (requires base_footprint in xacro) -->')
 
         w('    </plugin>')
         w('  </gazebo>')
