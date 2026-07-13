@@ -33,8 +33,10 @@ def restructure_for_ros2(staging_dir: Path, output_dir: Path, robot_name: str, p
     launch_dir    = output_dir / "launch"
     gazebo_dir    = output_dir / "gazebo"
     materials_dir = output_dir / "media" / "materials" / "scripts"
+    maps_dir      = output_dir / "maps"
+    worlds_dir    = output_dir / "worlds"
 
-    for d in [urdf_dir, meshes_dir, config_dir, rviz_dir, launch_dir, gazebo_dir, materials_dir]:
+    for d in [urdf_dir, meshes_dir, config_dir, rviz_dir, launch_dir, gazebo_dir, materials_dir, maps_dir, worlds_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     # 1. Isolate config

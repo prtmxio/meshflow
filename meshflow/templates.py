@@ -90,8 +90,10 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     ExecuteProcess, IncludeLaunchDescription,
-    SetEnvironmentVariable, TimerAction
+    SetEnvironmentVariable, TimerAction,
+    DeclareLaunchArgument
 )
+from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 import xacro
@@ -100,6 +102,15 @@ def generate_launch_description():
     pkg_name   = 'PKG_NAME'
     pkg_path   = get_package_share_directory(pkg_name)
     gazebo_pkg = get_package_share_directory('gazebo_ros')
+
+    world_path = '/usr/share/gazebo-11/worlds/empty.world'
+    # world_path = os.path.join(pkg_path, 'worlds', 'new_world.sdf')
+    declare_world_cmd = DeclareLaunchArgument(
+        name='world',
+        default_value=world_path,
+        description='Full path to the Gazebo world model file to load'
+    )
+    world_config = LaunchConfiguration('world')
 
     # ── Xacro → URDF, pre-resolve package:// → file:// ───────────────────
     # Gazebo converts package:// → model:// during URDF→SDF which breaks
@@ -156,6 +167,7 @@ def generate_launch_description():
         launch_arguments={
             'verbose': 'true',
             'gui':     'false',
+            'world':   world_config,
         }.items(),
     )
 
@@ -206,6 +218,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         disable_online_db,   # must come before gazebo starts
+        declare_world_cmd,
         fix_model_path,
         fix_resource_path,
         gzserver,
@@ -221,8 +234,10 @@ from ament_index_python.packages import get_package_share_directory, PackageNotF
 from launch import LaunchDescription
 from launch.actions import (
     ExecuteProcess, IncludeLaunchDescription,
-    SetEnvironmentVariable, TimerAction
+    SetEnvironmentVariable, TimerAction,
+    DeclareLaunchArgument
 )
+from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 import xacro
@@ -231,6 +246,15 @@ def generate_launch_description():
     pkg_name   = 'PKG_NAME'
     pkg_path   = get_package_share_directory(pkg_name)
     gazebo_pkg = get_package_share_directory('gazebo_ros')
+
+    world_path = '/usr/share/gazebo-11/worlds/empty.world'
+    # world_path = os.path.join(pkg_path, 'worlds', 'new_world.sdf')
+    declare_world_cmd = DeclareLaunchArgument(
+        name='world',
+        default_value=world_path,
+        description='Full path to the Gazebo world model file to load'
+    )
+    world_config = LaunchConfiguration('world')
 
     try:
         get_package_share_directory('controller_manager')
@@ -277,7 +301,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(gazebo_pkg, 'launch', 'gazebo.launch.py')
         ),
-        launch_arguments={'verbose': 'true', 'gui': 'false'}.items(),
+        launch_arguments={'verbose': 'true', 'gui': 'false', 'world': world_config}.items(),
     )
 
     gzclient = TimerAction(
@@ -354,6 +378,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         disable_online_db,
+        declare_world_cmd,
         fix_model_path,
         fix_resource_path,
         gzserver,
@@ -395,7 +420,7 @@ project(PKG_NAME)
 
 find_package(ament_cmake REQUIRED)
 
-install(DIRECTORY models launch rviz config gazebo media
+install(DIRECTORY models launch rviz config gazebo media maps worlds
   DESTINATION share/${PROJECT_NAME}
 )
 
