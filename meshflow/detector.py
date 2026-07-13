@@ -570,11 +570,19 @@ class URDFTraits:
                     print("  [WARN] trimesh not installed — fixed sensor types cannot be classified by geometry.")
                     print("         Install trimesh for camera/IMU/depth detection. Revolute sensors (lidar) still work.")
 
-        # Sort drive wheels by y_position (ascending → [0]=right, [-1]=left)
-        drive_wheels.sort(key=lambda n: n.y_position)
+        # Prefer name-based left/right detection (Onshape part names are authoritative);
+        # fall back to Y-position heuristic only when names give no signal.
+        _named_left  = [n for n in drive_wheels if 'left'  in n.joint_name.lower()]
+        _named_right = [n for n in drive_wheels if 'right' in n.joint_name.lower()]
 
-        left_wheel  = drive_wheels[-1] if drive_wheels else None
-        right_wheel = drive_wheels[0]  if drive_wheels else None
+        if _named_left and _named_right:
+            left_wheel  = _named_left[0]
+            right_wheel = _named_right[0]
+        else:
+            # Ascending Y sort: largest Y = left (REP 103: robot faces +X, +Y = left)
+            drive_wheels.sort(key=lambda n: n.y_position)
+            left_wheel  = drive_wheels[-1] if drive_wheels else None
+            right_wheel = drive_wheels[0]  if drive_wheels else None
 
         if left_wheel is not None and right_wheel is not None:
             pos_diff = left_wheel.global_T[:3, 3] - right_wheel.global_T[:3, 3]

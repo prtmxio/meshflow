@@ -105,15 +105,23 @@ def run_conversion(target_dir: Path) -> None:
     cmd = ["uv", "run", "--project", str(_MESHFLOW_ROOT), "onshape-to-robot", str(target_dir)]
     print(f"\n  Running: uv run onshape-to-robot {target_dir}\n")
 
-    result = subprocess.run(cmd, env=os.environ.copy(), capture_output=True, text=True)
-    print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"   # force line-by-line flush through the pipe
+    proc = subprocess.Popen(
+        cmd, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    output_lines: list[str] = []
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        output_lines.append(line)
+    proc.wait()
+    combined = "".join(output_lines)
 
-    if result.returncode == 0:
+    if proc.returncode == 0:
         return
 
-    combined = result.stdout + result.stderr
     if "KeyError: 'mass'" in combined or "ERROR: 'mass'" in combined:
         print(
             "\n[WARN] Some parts have no material/mass assigned in Onshape.\n"

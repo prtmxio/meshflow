@@ -880,7 +880,8 @@ def generate_gazebo_file(
             w('      <publish_odom_tf>true</publish_odom_tf>')
             w('      <odometry_frame>odom</odometry_frame>')
             w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
-            w(f'      <!-- <robot_base_frame>base_footprint</robot_base_frame>  ← uncomment and comment the line above when using Nav2 (requires base_footprint in xacro) -->')
+            w(f'      <!-- <robot_base_frame>base_footprint</robot_base_frame> -->')
+            w(f'      <!-- ↑ uncomment and comment the line above when using Nav2 (requires base_footprint in xacro) -->')
         else:
             lj_name = lw.joint_name if lw else "left_wheel_joint"
             rj_name = rw.joint_name if rw else "right_wheel_joint"
@@ -899,7 +900,8 @@ def generate_gazebo_file(
             w('      <publish_wheel_tf>false</publish_wheel_tf>')
             w('      <odometry_frame>odom</odometry_frame>')
             w(f'      <robot_base_frame>{traits.root_link}</robot_base_frame>')
-            w(f'      <!-- <robot_base_frame>base_footprint</robot_base_frame>  ← uncomment and comment the line above when using Nav2 (requires base_footprint in xacro) -->')
+            w(f'      <!-- <robot_base_frame>base_footprint</robot_base_frame> -->')
+            w(f'      <!-- ↑ uncomment and comment the line above when using Nav2 (requires base_footprint in xacro) -->')
 
         w('    </plugin>')
         w('  </gazebo>')
