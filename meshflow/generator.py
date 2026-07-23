@@ -1021,11 +1021,13 @@ def generate_gazebo_file(
         w('  </gazebo>')
         w('')
 
-    # Color-only blocks for all remaining links (sensors, passive rollers, etc.)
+    # Friction + color blocks for all remaining links (sensors, structural, hub parts, etc.)
     for lname in link_colors:
         if lname in handled_links:
             continue
         w(f'  <gazebo reference="{lname}">')
+        w('    <mu1>0.0</mu1>')
+        w('    <mu2>0.0</mu2>')
         w(f'    <material>{pkg_name}/{lname}</material>')
         w('  </gazebo>')
         w('')
